@@ -4,7 +4,7 @@ import mimetypes
 import urllib.request
 from app.extensions import get_db
 from app.utils.helpers import serialize_doc, utc_now, to_object_id
-from app.middlewares.auth import teacher_required
+from app.middlewares.auth import teacher_required, student_only_required
 from app.services.cloudinary_service import prepare_files_list, guess_filename
 
 work_bp = Blueprint("work", __name__)
@@ -175,12 +175,33 @@ def lesson_progress_summary(db, student_id, lesson_id):
     steps = []
     for section in sections:
         row = _section_work_row(db, student_id, lesson_id, section["section_type"], section)
-        steps.append({
+        step = {
             "section_type": row["section_type"],
             "status": row["status"],
             "label": row["label"],
             "icon": row["icon"],
-        })
+        }
+        work = row.get("work")
+        if work:
+            st = row["section_type"]
+            if st in ("warm_up", "reading", "interactive"):
+                step["score"] = work.get("score")
+                step["total"] = (work.get("data") or {}).get("total")
+            elif st == "video":
+                step["score"] = (work.get("data") or {}).get("watch_percentage") or work.get("score")
+            elif st == "vocabulary":
+                step["score"] = (work.get("data") or {}).get("vocab_count")
+            elif st == "quiz":
+                step["score"] = work.get("score")
+                step["passed"] = work.get("passed")
+                step["work_id"] = work.get("id")
+            elif st == "practice":
+                step["score"] = work.get("grade")
+                step["status"] = work.get("status", row["status"])
+                step["work_id"] = work.get("id")
+            elif st == "reflection":
+                step["work_id"] = work.get("id")
+        steps.append(step)
     completed = sum(1 for s in steps if s["status"] not in ("empty", "in_progress"))
     total = len(steps)
     return {
@@ -381,6 +402,43 @@ def lesson_student_steps(lesson_id, student_id):
         "lesson": serialize_doc(lesson),
         "vocabularies": serialize_doc(vocabularies),
         "steps": steps,
+    })
+
+
+@work_bp.route("/lesson/<lesson_id>/my-steps", methods=["GET"])
+@jwt_required()
+@student_only_required
+def my_lesson_steps(lesson_id):
+    db = get_db()
+    user_id = to_object_id(get_jwt_identity())
+    lesson_oid = to_object_id(lesson_id)
+
+    lesson = db.lessons.find_one({"_id": lesson_oid, "status": "published"})
+    if not lesson:
+        return jsonify({"message": "Không tìm thấy bài học"}), 404
+
+    if lesson_oid not in student_lesson_ids(db, user_id):
+        return jsonify({"message": "Bài học không thuộc lớp của bạn"}), 403
+
+    sections = list(db.lesson_sections.find({"lesson_id": lesson_oid}).sort("order", 1))
+    vocabularies = list(db.vocabularies.find({"lesson_id": lesson_oid}))
+
+    steps = []
+    for section in sections:
+        step = _section_work_row(db, user_id, lesson_oid, section["section_type"], section)
+        step["section_content"] = serialize_doc(section.get("content", {}))
+        steps.append(step)
+
+    completed = sum(1 for s in steps if s["status"] not in ("empty", "in_progress"))
+    total = len(steps)
+
+    return jsonify({
+        "lesson": serialize_doc(lesson),
+        "vocabularies": serialize_doc(vocabularies),
+        "steps": steps,
+        "steps_completed": completed,
+        "steps_total": total,
+        "percent": round(completed / total * 100) if total else 0,
     })
 
 
