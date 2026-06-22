@@ -36,5 +36,9 @@ def teacher_required(fn):
     return role_required("super_admin", "teacher")(fn)
 
 
+def student_only_required(fn):
+    return role_required("student")(fn)
+
+
 def student_required(fn):
     return role_required("super_admin", "teacher", "student")(fn)

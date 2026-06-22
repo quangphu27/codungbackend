@@ -1,10 +1,11 @@
 from flask import Blueprint, request, jsonify, current_app
-from flask_jwt_extended import jwt_required, get_jwt_identity
+from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 import cloudinary.exceptions
 from app.extensions import get_db
 from app.utils.helpers import serialize_doc, utc_now, to_object_id
-from app.middlewares.auth import teacher_required
+from app.middlewares.auth import teacher_required, student_only_required
 from app.services.cloudinary_service import upload_image, upload_video, upload_audio, upload_document
+from app.routes.work import lesson_progress_summary, student_lesson_ids
 
 lessons_bp = Blueprint("lessons", __name__)
 
@@ -75,13 +76,68 @@ def featured_lessons():
     return jsonify(serialize_doc(lessons))
 
 
+@lessons_bp.route("/student", methods=["GET"])
+@jwt_required()
+@student_only_required
+def student_lessons():
+    db = get_db()
+    user_id = to_object_id(get_jwt_identity())
+    page = int(request.args.get("page", 1))
+    limit = int(request.args.get("limit", 20))
+    skip = (page - 1) * limit
+
+    lesson_oids = student_lesson_ids(db, user_id)
+    query = {"_id": {"$in": lesson_oids}, "status": "published"}
+    total = db.lessons.count_documents(query)
+    lessons = list(db.lessons.find(query).sort("order", 1).skip(skip).limit(limit))
+
+    result = []
+    for lesson in lessons:
+        progress = lesson_progress_summary(db, user_id, lesson["_id"])
+        result.append({
+            **serialize_doc(lesson),
+            "progress": progress,
+        })
+
+    return jsonify({
+        "data": result,
+        "total": total,
+        "page": page,
+        "pages": (total + limit - 1) // limit if total else 0,
+    })
+
+
+@lessons_bp.route("/<lesson_id>/my-progress", methods=["GET"])
+@jwt_required()
+@student_only_required
+def student_lesson_progress(lesson_id):
+    db = get_db()
+    user_id = to_object_id(get_jwt_identity())
+    lesson_oid = to_object_id(lesson_id)
+
+    lesson = db.lessons.find_one({"_id": lesson_oid, "status": "published"})
+    if not lesson:
+        return jsonify({"message": "Không tìm thấy bài học"}), 404
+
+    allowed = lesson_oid in student_lesson_ids(db, user_id)
+    if not allowed:
+        return jsonify({"message": "Bài học không thuộc lớp của bạn"}), 403
+
+    return jsonify(lesson_progress_summary(db, user_id, lesson_oid))
+
+
 @lessons_bp.route("/<lesson_id>", methods=["GET"])
-@jwt_required(optional=True)
+@jwt_required()
+@student_only_required
 def get_lesson(lesson_id):
     db = get_db()
     lesson = db.lessons.find_one({"_id": to_object_id(lesson_id)})
     if not lesson:
         return jsonify({"message": "Không tìm thấy bài học"}), 404
+
+    user_id = to_object_id(get_jwt_identity())
+    if lesson["_id"] not in student_lesson_ids(db, user_id):
+        return jsonify({"message": "Bài học không thuộc lớp của bạn"}), 403
 
     sections = list(
         db.lesson_sections.find({"lesson_id": lesson["_id"]}).sort("order", 1)

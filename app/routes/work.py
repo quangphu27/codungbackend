@@ -170,6 +170,47 @@ def _lesson_ids_for_class(db, cls):
     return lesson_oids
 
 
+def lesson_progress_summary(db, student_id, lesson_id):
+    sections = list(db.lesson_sections.find({"lesson_id": lesson_id}).sort("order", 1))
+    steps = []
+    for section in sections:
+        row = _section_work_row(db, student_id, lesson_id, section["section_type"], section)
+        steps.append({
+            "section_type": row["section_type"],
+            "status": row["status"],
+            "label": row["label"],
+            "icon": row["icon"],
+        })
+    completed = sum(1 for s in steps if s["status"] not in ("empty", "in_progress"))
+    total = len(steps)
+    return {
+        "steps_completed": completed,
+        "steps_total": total,
+        "percent": round(completed / total * 100) if total else 0,
+        "steps": steps,
+    }
+
+
+def student_lesson_ids(db, user_id):
+    student = db.students.find_one({"user_id": user_id})
+    class_ids = list(student.get("class_ids", [])) if student else []
+    for cls in db.classes.find({"student_ids": user_id}, {"_id": 1}):
+        if cls["_id"] not in class_ids:
+            class_ids.append(cls["_id"])
+
+    lesson_ids = set()
+    for cid in class_ids:
+        cls = db.classes.find_one({"_id": cid})
+        if cls:
+            lesson_ids.update(_lesson_ids_for_class(db, cls))
+
+    if not lesson_ids:
+        lesson_ids = {
+            l["_id"] for l in db.lessons.find({"status": "published"}, {"_id": 1})
+        }
+    return list(lesson_ids)
+
+
 def _section_work_row(db, student_id, lesson_id, section_type, section):
     meta = next((m for m in SECTION_META if m["key"] == section_type), {})
     row = {
