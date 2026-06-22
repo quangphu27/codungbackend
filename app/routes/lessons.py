@@ -15,6 +15,35 @@ SECTION_TYPES = [
 ]
 
 
+def _can_manage_lesson(lesson, user_id, role):
+    if role == "super_admin":
+        return True
+    if role == "teacher":
+        teacher_id = to_object_id(str(lesson.get("teacher_id") or ""))
+        owner_id = to_object_id(str(user_id or ""))
+        return teacher_id is not None and teacher_id == owner_id
+    return False
+
+
+def _delete_lesson_related(db, lesson_oid):
+    db.lesson_sections.delete_many({"lesson_id": lesson_oid})
+    db.vocabularies.delete_many({"lesson_id": lesson_oid})
+    db.section_work.delete_many({"lesson_id": lesson_oid})
+    db.practice_submissions.delete_many({"lesson_id": lesson_oid})
+    db.journals.delete_many({"lesson_id": lesson_oid})
+    db.attempts.delete_many({"lesson_id": lesson_oid})
+
+    for quiz in db.quizzes.find({"lesson_id": lesson_oid}):
+        db.questions.delete_many({"quiz_id": quiz["_id"]})
+        db.attempts.delete_many({"quiz_id": quiz["_id"]})
+    db.quizzes.delete_many({"lesson_id": lesson_oid})
+
+    db.classes.update_many(
+        {"lesson_ids": lesson_oid},
+        {"$pull": {"lesson_ids": lesson_oid}},
+    )
+
+
 @lessons_bp.route("/", methods=["GET"])
 def list_lessons():
     db = get_db()
@@ -128,16 +157,23 @@ def student_lesson_progress(lesson_id):
 
 @lessons_bp.route("/<lesson_id>", methods=["GET"])
 @jwt_required()
-@student_only_required
 def get_lesson(lesson_id):
     db = get_db()
     lesson = db.lessons.find_one({"_id": to_object_id(lesson_id)})
     if not lesson:
         return jsonify({"message": "Không tìm thấy bài học"}), 404
 
+    claims = get_jwt()
+    role = claims.get("role", "student")
     user_id = to_object_id(get_jwt_identity())
-    if lesson["_id"] not in student_lesson_ids(db, user_id):
-        return jsonify({"message": "Bài học không thuộc lớp của bạn"}), 403
+
+    if role == "student":
+        if lesson.get("status") != "published":
+            return jsonify({"message": "Bài học không khả dụng"}), 403
+        if lesson["_id"] not in student_lesson_ids(db, user_id):
+            return jsonify({"message": "Bài học không thuộc lớp của bạn"}), 403
+    elif not _can_manage_lesson(lesson, user_id, role):
+        return jsonify({"message": "Không có quyền xem bài học này"}), 403
 
     sections = list(
         db.lesson_sections.find({"lesson_id": lesson["_id"]}).sort("order", 1)
@@ -198,18 +234,43 @@ def create_lesson():
 def update_lesson(lesson_id):
     data = request.get_json() or {}
     db = get_db()
+    lesson_oid = to_object_id(lesson_id)
+    lesson = db.lessons.find_one({"_id": lesson_oid})
+    if not lesson:
+        return jsonify({"message": "Không tìm thấy bài học"}), 404
+
+    claims = get_jwt()
+    user_id = to_object_id(get_jwt_identity())
+    if not _can_manage_lesson(lesson, user_id, claims.get("role", "teacher")):
+        return jsonify({"message": "Không có quyền chỉnh sửa bài học này"}), 403
+
     update = {k: v for k, v in data.items() if k in (
         "title", "description", "order", "status", "featured", "duration_minutes", "thumbnail"
     )}
     update["updated_at"] = utc_now()
 
-    result = db.lessons.update_one(
-        {"_id": to_object_id(lesson_id)},
-        {"$set": update},
-    )
-    if result.matched_count == 0:
-        return jsonify({"message": "Không tìm thấy bài học"}), 404
+    db.lessons.update_one({"_id": lesson_oid}, {"$set": update})
     return jsonify({"message": "Cập nhật thành công"})
+
+
+@lessons_bp.route("/<lesson_id>", methods=["DELETE"])
+@jwt_required()
+@teacher_required
+def delete_lesson(lesson_id):
+    db = get_db()
+    lesson_oid = to_object_id(lesson_id)
+    lesson = db.lessons.find_one({"_id": lesson_oid})
+    if not lesson:
+        return jsonify({"message": "Không tìm thấy bài học"}), 404
+
+    claims = get_jwt()
+    user_id = to_object_id(get_jwt_identity())
+    if not _can_manage_lesson(lesson, user_id, claims.get("role", "teacher")):
+        return jsonify({"message": "Không có quyền xóa bài học này"}), 403
+
+    _delete_lesson_related(db, lesson_oid)
+    db.lessons.delete_one({"_id": lesson_oid})
+    return jsonify({"message": "Đã xóa bài học"})
 
 
 @lessons_bp.route("/<lesson_id>/sections/<section_id>", methods=["PUT"])
@@ -218,6 +279,15 @@ def update_lesson(lesson_id):
 def update_section(lesson_id, section_id):
     data = request.get_json() or {}
     db = get_db()
+    lesson_oid = to_object_id(lesson_id)
+    lesson = db.lessons.find_one({"_id": lesson_oid})
+    if not lesson:
+        return jsonify({"message": "Không tìm thấy bài học"}), 404
+
+    claims = get_jwt()
+    user_id = to_object_id(get_jwt_identity())
+    if not _can_manage_lesson(lesson, user_id, claims.get("role", "teacher")):
+        return jsonify({"message": "Không có quyền chỉnh sửa bài học này"}), 403
 
     update = {
         "content": data.get("content", {}),
@@ -244,9 +314,15 @@ def update_section(lesson_id, section_id):
 @teacher_required
 def upload_lesson_media(lesson_id):
     db = get_db()
-    lesson = db.lessons.find_one({"_id": to_object_id(lesson_id)})
+    lesson_oid = to_object_id(lesson_id)
+    lesson = db.lessons.find_one({"_id": lesson_oid})
     if not lesson:
         return jsonify({"message": "Không tìm thấy bài học"}), 404
+
+    claims = get_jwt()
+    user_id = to_object_id(get_jwt_identity())
+    if not _can_manage_lesson(lesson, user_id, claims.get("role", "teacher")):
+        return jsonify({"message": "Không có quyền tải file cho bài học này"}), 403
 
     file = request.files.get("file")
     if not file or not file.filename:
