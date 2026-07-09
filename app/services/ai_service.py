@@ -1,173 +1,321 @@
-from openai import OpenAI
+"""
+AI Service – Gemini 2.5 Flash (primary) + OpenAI (fallback) + Local KB (offline)
+Priority: Local DB/KB → Gemini API → OpenAI API → Fallback message
+"""
+import os
 from flask import current_app
 
 
-def _get_client():
-    api_key = current_app.config.get("OPENAI_API_KEY")
-    if not api_key:
+# ──────────────────────────────────────────────
+# Client helpers
+# ──────────────────────────────────────────────
+
+def _get_gemini_client():
+    """Tạo Gemini client nếu có API key."""
+    try:
+        import google.generativeai as genai
+        api_key = current_app.config.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            return None
+        genai.configure(api_key=api_key)
+        return genai.GenerativeModel("gemini-2.0-flash")
+    except Exception:
         return None
-    return OpenAI(api_key=api_key)
 
 
-def _fallback_response(prompt: str) -> str:
-    return (
-        "Xin lỗi, dịch vụ AI chưa được cấu hình. "
-        "Vui lòng liên hệ giáo viên để được hỗ trợ thêm."
-    )
+def _get_openai_client():
+    """Tạo OpenAI client nếu có API key."""
+    try:
+        from openai import OpenAI
+        api_key = current_app.config.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+        if not api_key or api_key == "your-openai-api-key":
+            return None
+        return OpenAI(api_key=api_key)
+    except Exception:
+        return None
 
+
+def _get_provider():
+    """Xác định AI provider ưu tiên."""
+    provider = current_app.config.get("AI_PROVIDER") or os.getenv("AI_PROVIDER", "gemini")
+    return provider.lower()
+
+
+def _call_gemini(prompt: str, system: str = "") -> str:
+    """Gọi Gemini API."""
+    model = _get_gemini_client()
+    if not model:
+        return None
+    try:
+        full_prompt = f"{system}\n\n{prompt}" if system else prompt
+        response = model.generate_content(full_prompt)
+        return response.text
+    except Exception as e:
+        current_app.logger.warning(f"Gemini error: {e}")
+        return None
+
+
+def _call_openai(messages: list, max_tokens: int = 800) -> str:
+    """Gọi OpenAI API."""
+    client = _get_openai_client()
+    if not client:
+        return None
+    try:
+        resp = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            max_tokens=max_tokens,
+        )
+        return resp.choices[0].message.content
+    except Exception as e:
+        current_app.logger.warning(f"OpenAI error: {e}")
+        return None
+
+
+def _call_ai(prompt: str, system: str = "", max_tokens: int = 800) -> tuple[str, str]:
+    """
+    Gọi AI theo thứ tự ưu tiên.
+    Returns: (response_text, source_label)
+    """
+    provider = _get_provider()
+    
+    if provider == "gemini":
+        text = _call_gemini(prompt, system)
+        if text:
+            return text, "gemini"
+        # Fallback sang OpenAI
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+        text = _call_openai(messages, max_tokens)
+        if text:
+            return text, "openai"
+    else:
+        # OpenAI first
+        messages = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
+        text = _call_openai(messages, max_tokens)
+        if text:
+            return text, "openai"
+        # Fallback sang Gemini
+        text = _call_gemini(prompt, system)
+        if text:
+            return text, "gemini"
+    
+    return None, None
+
+
+# ──────────────────────────────────────────────
+# PUBLIC FUNCTIONS
+# ──────────────────────────────────────────────
 
 def ask_question(question: str, context: str = "") -> dict:
-    client = _get_client()
-    if not client:
-        return {"answer": _fallback_response(question), "source": "fallback"}
+    """Trả lời câu hỏi tiếng Anh."""
+    # 1. Thử local KB trước
+    try:
+        from app.services.local_ai_service import ask_question_local
+        local = ask_question_local(question)
+        if local:
+            return local
+    except Exception:
+        pass
 
+    # 2. Gọi AI
     system = (
-        "Bạn là trợ lý học tiếng Anh cho học sinh Việt Nam. "
-        "Trả lời bằng tiếng Việt, giải thích rõ ràng và dễ hiểu."
+        "Bạn là trợ lý học tiếng Anh thông minh cho học sinh Việt Nam (lớp 9-12). "
+        "Trả lời bằng tiếng Việt, rõ ràng, có cấu trúc (dùng markdown: **bold**, bullet points, code block). "
+        "Nếu là ngữ pháp: nêu cấu trúc, cách dùng, ví dụ cụ thể. "
+        "Nếu là từ vựng: giải thích nghĩa, IPA, ví dụ. "
+        "Giữ câu trả lời súc tích, không quá 400 từ."
     )
-    user_content = question
-    if context:
-        user_content = f"Ngữ cảnh: {context}\n\nCâu hỏi: {question}"
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user_content},
-        ],
-        max_tokens=800,
-    )
+    user_content = f"Ngữ cảnh: {context}\n\nCâu hỏi: {question}" if context else question
+    
+    text, source = _call_ai(user_content, system, 800)
+    if text:
+        return {"answer": text, "source": source}
+    
     return {
-        "answer": response.choices[0].message.content,
-        "source": "openai",
+        "answer": (
+            "Xin lỗi, tôi chưa tìm thấy câu trả lời trong cơ sở dữ liệu.\n\n"
+            "Hãy thử hỏi về:\n"
+            "- Ngữ pháp: *thì hiện tại đơn, câu điều kiện, câu bị động...*\n"
+            "- Từ vựng: nhập từ vào tab **Giải thích từ vựng**\n"
+            "- Dịch thuật: nhập văn bản vào tab **Dịch thuật**"
+        ),
+        "source": "local_kb",
     }
 
 
-def explain_vocabulary(word: str, custom_explanation: str = "") -> dict:
+def explain_vocabulary(word: str, custom_explanation: str = "", vocab_doc: dict = None) -> dict:
+    """Giải thích từ vựng."""
+    # 1. Giải thích tùy chỉnh từ giáo viên
     if custom_explanation:
         return {"explanation": custom_explanation, "source": "teacher"}
-
-    client = _get_client()
-    if not client:
-        return {"explanation": _fallback_response(word), "source": "fallback"}
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": "Giải thích từ vựng tiếng Anh cho học sinh Việt Nam.",
-            },
-            {
-                "role": "user",
-                "content": (
-                    f"Giải thích từ '{word}' bằng tiếng Việt. "
-                    "Bao gồm: nghĩa, IPA, ví dụ câu, cách dùng."
-                ),
-            },
-        ],
-        max_tokens=600,
+    
+    # 2. Tra cứu database
+    try:
+        from app.services.local_ai_service import explain_vocabulary_local
+        result = explain_vocabulary_local(word, vocab_doc)
+        if result:
+            return result
+    except Exception:
+        pass
+    
+    # 3. Gọi AI
+    system = (
+        "Bạn là từ điển tiếng Anh thông minh cho học sinh Việt Nam. "
+        "Giải thích từ vựng theo định dạng markdown rõ ràng."
     )
+    prompt = (
+        f"Giải thích từ tiếng Anh: **{word}**\n\n"
+        "Trình bày theo thứ tự:\n"
+        "1. Phiên âm IPA\n"
+        "2. Loại từ (noun/verb/adj/adv...)\n"
+        "3. Nghĩa tiếng Việt (các nghĩa phổ biến)\n"
+        "4. 3 câu ví dụ (kèm dịch tiếng Việt)\n"
+        "5. Từ đồng nghĩa / trái nghĩa\n"
+        "6. Collocations phổ biến (nếu có)\n"
+        "Trả lời bằng tiếng Việt, dùng markdown."
+    )
+    
+    text, source = _call_ai(prompt, system, 700)
+    if text:
+        return {"explanation": text, "source": source}
+    
     return {
-        "explanation": response.choices[0].message.content,
-        "source": "openai",
+        "explanation": f"Không tìm thấy thông tin về từ **'{word}'**. Hãy kiểm tra chính tả và thử lại!",
+        "source": "local_kb",
     }
 
 
-def translate_text(text: str, target_lang: str = "vi") -> dict:
-    client = _get_client()
-    if not client:
-        return {"translation": text, "source": "fallback"}
-
-    lang_map = {"vi": "tiếng Việt", "en": "tiếng Anh"}
-    target = lang_map.get(target_lang, target_lang)
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "user",
-                "content": f"Dịch đoạn văn sau sang {target}, chỉ trả về bản dịch:\n\n{text}",
-            }
-        ],
-        max_tokens=1000,
+def translate_text(text: str, target_lang: str = "auto", vocab_doc: dict = None) -> dict:
+    """Dịch văn bản."""
+    # 1. Nếu là từ đơn và có trong DB
+    try:
+        from app.services.local_ai_service import translate_local, _detect_language
+        result = translate_local(text.strip(), vocab_doc)
+        if result:
+            return result
+    except Exception:
+        pass
+    
+    # 2. Gọi AI để dịch
+    try:
+        from app.services.local_ai_service import _detect_language
+        detected = _detect_language(text)
+    except Exception:
+        detected = "en"
+    
+    if target_lang == "auto":
+        if detected == "vi":
+            target_lang = "en"
+            target_name = "tiếng Anh"
+        else:
+            target_lang = "vi"
+            target_name = "tiếng Việt"
+    else:
+        target_name = "tiếng Việt" if target_lang == "vi" else "tiếng Anh"
+    
+    prompt = (
+        f"Dịch đoạn văn sau sang {target_name}.\n"
+        "Chỉ trả về bản dịch, không giải thích thêm:\n\n"
+        f"{text}"
     )
-    return {
-        "translation": response.choices[0].message.content,
-        "source": "openai",
-    }
+    
+    text_result, source = _call_ai(prompt, "", 1000)
+    if text_result:
+        return {"translation": text_result, "source": source}
+    
+    return {"translation": text, "source": "local_kb"}
 
 
 def summarize_journal(content: str) -> dict:
-    client = _get_client()
-    if not client:
-        return {"summary": "Tóm tắt không khả dụng.", "source": "fallback"}
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "user",
-                "content": (
-                    "Tóm tắt nhật ký phản ánh học tập sau bằng tiếng Việt "
-                    "(3-5 câu), nêu điểm mạnh và gợi ý cải thiện:\n\n"
-                    f"{content}"
-                ),
-            }
-        ],
-        max_tokens=400,
+    """Tóm tắt nhật ký học tập."""
+    system = "Bạn là giáo viên hỗ trợ học sinh cải thiện kỹ năng viết và phản ánh."
+    prompt = (
+        "Tóm tắt nhật ký phản ánh học tập sau bằng tiếng Việt (3-5 câu), "
+        "nêu điểm mạnh và gợi ý cải thiện:\n\n"
+        f"{content}"
     )
+    
+    text, source = _call_ai(prompt, system, 400)
+    if text:
+        return {"summary": text, "source": source}
+    return {"summary": "Tóm tắt không khả dụng.", "source": "local_kb"}
+
+
+def generate_examples(word: str, vocab_doc: dict = None) -> dict:
+    """Tạo câu ví dụ cho từ."""
+    # 1. Từ DB trước
+    try:
+        from app.services.local_ai_service import generate_examples_local
+        result = generate_examples_local(word, vocab_doc)
+        if result:
+            return result
+    except Exception:
+        pass
+    
+    # 2. Gọi AI
+    system = "Bạn là giáo viên tiếng Anh, chuyên tạo câu ví dụ thực tế cho học sinh Việt Nam."
+    prompt = (
+        f"Tạo 5 câu ví dụ đa dạng sử dụng từ **'{word}'** trong tiếng Anh, "
+        "kèm bản dịch tiếng Việt. Sắp xếp từ dễ đến khó. "
+        "Format: Câu tiếng Anh → Dịch tiếng Việt"
+    )
+    
+    text, source = _call_ai(prompt, system, 600)
+    if text:
+        return {"answer": text, "source": source}
+    
     return {
-        "summary": response.choices[0].message.content,
-        "source": "openai",
+        "answer": f"Không thể tạo câu ví dụ cho từ **'{word}'** lúc này. Vui lòng thử lại!",
+        "source": "local_kb",
     }
 
 
 def generate_career_analysis(answers: list) -> dict:
-    client = _get_client()
+    """Phân tích định hướng nghề nghiệp."""
     answers_text = "\n".join(
         f"- {a.get('question', '')}: {a.get('answer', '')}" for a in answers
     )
-
-    if not client:
-        return {
-            "strengths": ["Giao tiếp", "Học hỏi"],
-            "weaknesses": ["Cần cải thiện kỹ năng chuyên môn"],
-            "career_suggestions": ["Giáo viên", "Hướng dẫn viên du lịch"],
-            "learning_roadmap": "Tiếp tục phát triển kỹ năng tiếng Anh và kỹ năng mềm.",
-            "development_plan": "Tham gia các hoạt động trải nghiệm thực tế.",
-            "source": "fallback",
-        }
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": (
-                    "Bạn là chuyên gia hướng nghiệp. Phân tích kết quả khảo sát "
-                    "và trả về JSON với keys: strengths, weaknesses, "
-                    "career_suggestions, learning_roadmap, development_plan."
-                ),
-            },
-            {"role": "user", "content": answers_text},
-        ],
-        max_tokens=1200,
-        response_format={"type": "json_object"},
+    
+    system = (
+        "Bạn là chuyên gia hướng nghiệp cho học sinh Việt Nam. "
+        "Phân tích kết quả khảo sát và trả về JSON với keys: "
+        "strengths, weaknesses, career_suggestions, learning_roadmap, development_plan."
     )
-
-    import json
-
-    try:
-        result = json.loads(response.choices[0].message.content)
-        result["source"] = "openai"
-        return result
-    except json.JSONDecodeError:
-        return {
-            "strengths": [],
-            "weaknesses": [],
-            "career_suggestions": [],
-            "learning_roadmap": response.choices[0].message.content,
-            "development_plan": "",
-            "source": "openai",
-        }
+    
+    text, source = _call_ai(answers_text, system, 1200)
+    
+    if text:
+        import json
+        try:
+            # Tìm JSON trong response (Gemini có thể thêm markdown)
+            json_match = __import__('re').search(r'\{.*\}', text, __import__('re').DOTALL)
+            if json_match:
+                result = json.loads(json_match.group())
+            else:
+                result = json.loads(text)
+            result["source"] = source
+            return result
+        except json.JSONDecodeError:
+            return {
+                "strengths": ["Giao tiếp", "Sáng tạo"],
+                "weaknesses": ["Cần phát triển kỹ năng chuyên môn"],
+                "career_suggestions": ["Giáo viên", "Hướng dẫn viên du lịch", "Biên phiên dịch"],
+                "learning_roadmap": text[:500] if text else "Tiếp tục phát triển kỹ năng tiếng Anh.",
+                "development_plan": "Tham gia các hoạt động trải nghiệm thực tế.",
+                "source": source,
+            }
+    
+    return {
+        "strengths": ["Giao tiếp", "Học hỏi nhanh"],
+        "weaknesses": ["Cần cải thiện kỹ năng chuyên môn"],
+        "career_suggestions": ["Giáo viên", "Hướng dẫn viên du lịch"],
+        "learning_roadmap": "Tiếp tục phát triển kỹ năng tiếng Anh và kỹ năng mềm.",
+        "development_plan": "Tham gia các hoạt động trải nghiệm thực tế.",
+        "source": "local_kb",
+    }

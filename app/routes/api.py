@@ -240,10 +240,18 @@ def explain_vocab():
     from app.services.ai_service import explain_vocabulary
     data = request.get_json() or {}
     db = get_db()
-    custom = db.settings.find_one({"key": f"vocab_explanation_{data.get('word', '')}"})
+    word = data.get("word", "").strip().lower()
+    # Ưu tiên giải thích tùy chỉnh từ giáo viên
+    custom = db.settings.find_one({"key": f"vocab_explanation_{word}"})
+    # Tra database từ vựng
+    vocab_doc = db.vocabularies.find_one(
+        {"word": {"$regex": f"^{word}$", "$options": "i"}}
+    )
+    from app.utils.helpers import serialize_doc
     result = explain_vocabulary(
-        data.get("word", ""),
+        word,
         custom.get("value") if custom else "",
+        vocab_doc=serialize_doc(vocab_doc) if vocab_doc else None,
     )
     return jsonify(result)
 
@@ -253,20 +261,88 @@ def explain_vocab():
 def translate():
     from app.services.ai_service import translate_text
     data = request.get_json() or {}
-    result = translate_text(data.get("text", ""), data.get("target_lang", "vi"))
+    text = data.get("text", "").strip()
+    target_lang = data.get("target_lang", "auto")
+    db = get_db()
+    # Nếu là từ đơn, thử tra DB
+    vocab_doc = None
+    if len(text.split()) == 1:
+        vocab_doc = db.vocabularies.find_one(
+            {"word": {"$regex": f"^{text}$", "$options": "i"}}
+        )
+    from app.utils.helpers import serialize_doc
+    result = translate_text(
+        text, target_lang,
+        vocab_doc=serialize_doc(vocab_doc) if vocab_doc else None,
+    )
     return jsonify(result)
 
 
 @assistant_bp.route("/examples", methods=["POST"])
 @jwt_required()
-def generate_examples():
-    from app.services.ai_service import ask_question
+def generate_examples_route():
+    from app.services.ai_service import generate_examples
     data = request.get_json() or {}
-    word = data.get("word", "")
-    result = ask_question(
-        f"Tạo 3 câu ví dụ sử dụng từ '{word}' trong tiếng Anh kèm bản dịch tiếng Việt.",
+    word = data.get("word", "").strip()
+    db = get_db()
+    vocab_doc = db.vocabularies.find_one(
+        {"word": {"$regex": f"^{word}$", "$options": "i"}}
+    )
+    from app.utils.helpers import serialize_doc
+    result = generate_examples(
+        word,
+        vocab_doc=serialize_doc(vocab_doc) if vocab_doc else None,
     )
     return jsonify(result)
+
+
+@assistant_bp.route("/chat", methods=["POST"])
+@jwt_required()
+def chat():
+    """Unified chat endpoint – tự động phát hiện intent."""
+    from app.services.ai_service import (
+        ask_question as ai_ask,
+        explain_vocabulary,
+        translate_text,
+        generate_examples,
+    )
+    data = request.get_json() or {}
+    mode = data.get("mode", "ask")
+    text_input = data.get("input", "").strip()
+    db = get_db()
+
+    if not text_input:
+        return jsonify({"error": "Vui lòng nhập nội dung"}), 400
+
+    vocab_doc = None
+    if mode in ("vocab", "translate", "examples"):
+        word = text_input.split()[0]
+        raw = db.vocabularies.find_one(
+            {"word": {"$regex": f"^{word}$", "$options": "i"}}
+        )
+        from app.utils.helpers import serialize_doc
+        vocab_doc = serialize_doc(raw) if raw else None
+
+    if mode == "vocab":
+        custom = db.settings.find_one({"key": f"vocab_explanation_{text_input.lower()}"})
+        result = explain_vocabulary(
+            text_input,
+            custom.get("value") if custom else "",
+            vocab_doc=vocab_doc,
+        )
+        return jsonify({"answer": result.get("explanation", ""), "source": result.get("source")})
+
+    elif mode == "translate":
+        result = translate_text(text_input, "auto", vocab_doc=vocab_doc)
+        return jsonify({"answer": result.get("translation", ""), "source": result.get("source")})
+
+    elif mode == "examples":
+        result = generate_examples(text_input, vocab_doc=vocab_doc)
+        return jsonify(result)
+
+    else:  # ask
+        result = ai_ask(text_input, data.get("context", ""))
+        return jsonify(result)
 
 
 @dashboard_bp.route("/admin", methods=["GET"])
