@@ -7,31 +7,94 @@ from flask import current_app
 
 
 # ──────────────────────────────────────────────
-# Client helpers
+# Client helpers – REST-based (không phụ thuộc SDK version)
 # ──────────────────────────────────────────────
 
-def _get_gemini_client():
-    """Tạo Gemini client nếu có API key."""
-    try:
-        import google.generativeai as genai
-        api_key = current_app.config.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
-        if not api_key:
-            return None
-        genai.configure(api_key=api_key)
-        return genai.GenerativeModel("gemini-2.0-flash")
-    except Exception:
+# Gemini: thử lần lượt, fallback khi quota hết
+GEMINI_MODELS = [
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-preview-05-20",
+    "gemini-2.0-flash",
+    "gemini-1.5-flash",
+]
+
+GEMINI_REST_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+
+
+def _call_gemini(prompt: str, system: str = "") -> str:
+    """Gọi Gemini qua REST HTTP – không dùng SDK để tránh lỗi thư viện."""
+    import json
+    api_key = current_app.config.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
+    if not api_key:
         return None
 
+    contents = []
+    if system:
+        contents.append({"role": "user",  "parts": [{"text": system}]})
+        contents.append({"role": "model", "parts": [{"text": "Understood."}]})
+    contents.append({"role": "user", "parts": [{"text": prompt}]})
+    payload = json.dumps({"contents": contents}).encode()
 
-def _get_openai_client():
-    """Tạo OpenAI client nếu có API key."""
+    for model_name in GEMINI_MODELS:
+        url = GEMINI_REST_URL.format(model=model_name, key=api_key)
+        try:
+            import urllib.request
+            req = urllib.request.Request(
+                url, data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30) as res:
+                data = json.loads(res.read())
+                text = data["candidates"][0]["content"]["parts"][0]["text"]
+                current_app.logger.info(f"Gemini OK: {model_name}")
+                return text
+        except Exception as e:
+            err_str = str(e)
+            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "quota" in err_str.lower():
+                current_app.logger.warning(f"Gemini quota: {model_name}, next...")
+                continue
+            elif "400" in err_str or "invalid" in err_str.lower() or "INVALID_ARGUMENT" in err_str:
+                current_app.logger.warning(f"Gemini invalid key/model: {model_name}")
+                # Key không hợp lệ → bỏ hẳn Gemini
+                return None
+            elif "404" in err_str or "not found" in err_str.lower():
+                current_app.logger.warning(f"Gemini model not found: {model_name}")
+                continue
+            else:
+                current_app.logger.warning(f"Gemini error ({model_name}): {err_str[:120]}")
+                continue
+
+    current_app.logger.warning("All Gemini models failed")
+    return None
+
+
+def _call_openai(messages: list, max_tokens: int = 800) -> str:
+    """Gọi OpenAI qua REST HTTP – không phụ thuộc SDK version."""
+    import json, urllib.request
+    api_key = current_app.config.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    if not api_key or api_key == "your-openai-api-key":
+        return None
+    payload = json.dumps({
+        "model": "gpt-4o-mini",
+        "messages": messages,
+        "max_tokens": max_tokens,
+    }).encode()
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        method="POST",
+    )
     try:
-        from openai import OpenAI
-        api_key = current_app.config.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-        if not api_key or api_key == "your-openai-api-key":
-            return None
-        return OpenAI(api_key=api_key)
-    except Exception:
+        with urllib.request.urlopen(req, timeout=30) as res:
+            data = json.loads(res.read())
+            return data["choices"][0]["message"]["content"]
+    except Exception as e:
+        current_app.logger.warning(f"OpenAI error: {str(e)[:120]}")
         return None
 
 
@@ -39,37 +102,6 @@ def _get_provider():
     """Xác định AI provider ưu tiên."""
     provider = current_app.config.get("AI_PROVIDER") or os.getenv("AI_PROVIDER", "gemini")
     return provider.lower()
-
-
-def _call_gemini(prompt: str, system: str = "") -> str:
-    """Gọi Gemini API."""
-    model = _get_gemini_client()
-    if not model:
-        return None
-    try:
-        full_prompt = f"{system}\n\n{prompt}" if system else prompt
-        response = model.generate_content(full_prompt)
-        return response.text
-    except Exception as e:
-        current_app.logger.warning(f"Gemini error: {e}")
-        return None
-
-
-def _call_openai(messages: list, max_tokens: int = 800) -> str:
-    """Gọi OpenAI API."""
-    client = _get_openai_client()
-    if not client:
-        return None
-    try:
-        resp = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            max_tokens=max_tokens,
-        )
-        return resp.choices[0].message.content
-    except Exception as e:
-        current_app.logger.warning(f"OpenAI error: {e}")
-        return None
 
 
 def _call_ai(prompt: str, system: str = "", max_tokens: int = 800) -> tuple[str, str]:
