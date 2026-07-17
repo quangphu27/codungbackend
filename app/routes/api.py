@@ -23,6 +23,7 @@ ACTIVITY_TOPICS = [
     "sustainable_living",
     "local_tourism",
     "traditional_festivals",
+    "healthy_lifestyle",
 ]
 
 
@@ -36,7 +37,9 @@ def list_activities():
         query["status"] = status
     if topic:
         query["topic"] = topic
-    activities = list(db.activities.find(query).sort("created_at", -1))
+    activities = list(
+        db.activities.find(query).sort([("order", 1), ("created_at", -1)])
+    )
     return jsonify(serialize_doc(activities))
 
 
@@ -58,8 +61,11 @@ def create_activity():
 
     activity = {
         "title": data.get("title", ""),
+        "subtitle": data.get("subtitle", ""),
         "topic": data.get("topic", "vietnamese_culture"),
         "introduction": data.get("introduction", ""),
+        "icon": data.get("icon", ""),
+        "order": int(data.get("order", 0)),
         "vocabulary": data.get("vocabulary", []),
         "reading": data.get("reading", {}),
         "video": data.get("video", {}),
@@ -68,10 +74,59 @@ def create_activity():
         "teacher_id": to_object_id(get_jwt_identity()),
         "status": data.get("status", "draft"),
         "created_at": utc_now(),
+        "updated_at": utc_now(),
     }
     result = db.activities.insert_one(activity)
     activity["_id"] = result.inserted_id
     return jsonify(serialize_doc(activity)), 201
+
+
+@activities_bp.route("/<activity_id>", methods=["PUT"])
+@jwt_required()
+@teacher_required
+def update_activity(activity_id):
+    data = request.get_json() or {}
+    db = get_db()
+    oid = to_object_id(activity_id)
+    existing = db.activities.find_one({"_id": oid})
+    if not existing:
+        return jsonify({"message": "Không tìm thấy hoạt động"}), 404
+
+    update = {}
+    for key in ("title", "subtitle", "topic", "introduction", "icon", "status"):
+        if key in data:
+            update[key] = data[key]
+    if "order" in data:
+        update["order"] = int(data.get("order") or 0)
+    if "vocabulary" in data:
+        update["vocabulary"] = data["vocabulary"]
+    if "reading" in data:
+        update["reading"] = data["reading"]
+    if "video" in data:
+        update["video"] = data["video"]
+    if "activities" in data:
+        update["activities"] = data["activities"]
+    if data.get("quiz_id"):
+        update["quiz_id"] = to_object_id(data["quiz_id"])
+
+    if not update:
+        return jsonify({"message": "Không có dữ liệu cập nhật"}), 400
+
+    update["updated_at"] = utc_now()
+    db.activities.update_one({"_id": oid}, {"$set": update})
+    return jsonify(serialize_doc(db.activities.find_one({"_id": oid})))
+
+
+@activities_bp.route("/<activity_id>", methods=["DELETE"])
+@jwt_required()
+@teacher_required
+def delete_activity(activity_id):
+    db = get_db()
+    oid = to_object_id(activity_id)
+    if not db.activities.find_one({"_id": oid}):
+        return jsonify({"message": "Không tìm thấy hoạt động"}), 404
+    db.activities.delete_one({"_id": oid})
+    return jsonify({"message": "Đã xóa hoạt động"})
 
 
 @activities_bp.route("/<activity_id>/complete", methods=["POST"])
@@ -485,7 +540,7 @@ def home_data():
             list(db.vocabularies.find().sort("created_at", -1).limit(8))
         ),
         "activities": serialize_doc(
-            list(db.activities.find({"status": "published"}).limit(6))
+            list(db.activities.find({"status": "published"}).sort([("order", 1), ("created_at", -1)]).limit(6))
         ),
         "statistics": {
             "total_students": db.users.count_documents({"role": "student"}),
