@@ -16,6 +16,7 @@ from app.routes.api import (
     activities_bp, career_bp, resources_bp, assistant_bp,
     dashboard_bp, portfolio_bp, home_bp, settings_bp,
 )
+from app.routes.studio import studio_bp
 
 
 def create_app(config_class=Config):
@@ -55,6 +56,7 @@ def create_app(config_class=Config):
     app.register_blueprint(portfolio_bp, url_prefix=f"{prefix}/portfolio")
     app.register_blueprint(home_bp, url_prefix=f"{prefix}/home")
     app.register_blueprint(settings_bp, url_prefix=f"{prefix}/settings")
+    app.register_blueprint(studio_bp, url_prefix=f"{prefix}/studio")
 
     @app.route("/api/health")
     def health():

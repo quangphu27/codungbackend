@@ -21,19 +21,36 @@ GEMINI_MODELS = [
 GEMINI_REST_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
 
 
-def _call_gemini(prompt: str, system: str = "") -> str:
+def _call_gemini(
+    prompt: str,
+    system: str = "",
+    *,
+    json_mode: bool = False,
+    timeout: int = 30,
+    max_output_tokens: int = 2048,
+) -> str:
     """Gọi Gemini qua REST HTTP – không dùng SDK để tránh lỗi thư viện."""
     import json
-    api_key = current_app.config.get("GEMINI_API_KEY") or os.getenv("GEMINI_API_KEY")
+    from app.services.secret_store import get_gemini_api_key
+    api_key = get_gemini_api_key()
     if not api_key:
         return None
 
     contents = []
     if system:
         contents.append({"role": "user",  "parts": [{"text": system}]})
-        contents.append({"role": "model", "parts": [{"text": "Understood."}]})
+        contents.append({"role": "model", "parts": [{"text": "Understood. I will follow the instructions."}]})
     contents.append({"role": "user", "parts": [{"text": prompt}]})
-    payload = json.dumps({"contents": contents}).encode()
+
+    generation_config = {
+        "temperature": 0.4 if json_mode else 0.7,
+        "maxOutputTokens": max(256, int(max_output_tokens or 2048)),
+    }
+    if json_mode:
+        generation_config["responseMimeType"] = "application/json"
+
+    body = {"contents": contents, "generationConfig": generation_config}
+    payload = json.dumps(body).encode()
 
     for model_name in GEMINI_MODELS:
         url = GEMINI_REST_URL.format(model=model_name, key=api_key)
@@ -44,9 +61,17 @@ def _call_gemini(prompt: str, system: str = "") -> str:
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=30) as res:
+            with urllib.request.urlopen(req, timeout=timeout) as res:
                 data = json.loads(res.read())
-                text = data["candidates"][0]["content"]["parts"][0]["text"]
+                candidates = data.get("candidates") or []
+                if not candidates:
+                    current_app.logger.warning(f"Gemini empty candidates: {model_name}")
+                    continue
+                parts = (candidates[0].get("content") or {}).get("parts") or []
+                text = "".join(p.get("text", "") for p in parts if p.get("text"))
+                if not text:
+                    current_app.logger.warning(f"Gemini empty text: {model_name}")
+                    continue
                 current_app.logger.info(f"Gemini OK: {model_name}")
                 return text
         except Exception as e:
@@ -54,12 +79,38 @@ def _call_gemini(prompt: str, system: str = "") -> str:
             if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "quota" in err_str.lower():
                 current_app.logger.warning(f"Gemini quota: {model_name}, next...")
                 continue
-            elif "400" in err_str or "invalid" in err_str.lower() or "INVALID_ARGUMENT" in err_str:
-                current_app.logger.warning(f"Gemini invalid key/model: {model_name}")
-                # Key không hợp lệ → bỏ hẳn Gemini
-                return None
             elif "404" in err_str or "not found" in err_str.lower():
                 current_app.logger.warning(f"Gemini model not found: {model_name}")
+                continue
+            elif "400" in err_str or "INVALID_ARGUMENT" in err_str:
+                # Một số model không hỗ trợ responseMimeType → thử lại không JSON mode 1 lần
+                if json_mode and "responseMimeType" in err_str.lower():
+                    current_app.logger.warning(f"Gemini JSON mime unsupported on {model_name}, retry plain")
+                    try:
+                        plain_body = {
+                            "contents": contents,
+                            "generationConfig": {
+                                "temperature": 0.4,
+                                "maxOutputTokens": generation_config["maxOutputTokens"],
+                            },
+                        }
+                        plain_payload = json.dumps(plain_body).encode()
+                        req2 = urllib.request.Request(
+                            url, data=plain_payload,
+                            headers={"Content-Type": "application/json"},
+                            method="POST",
+                        )
+                        with urllib.request.urlopen(req2, timeout=timeout) as res2:
+                            data2 = json.loads(res2.read())
+                            parts2 = (data2["candidates"][0].get("content") or {}).get("parts") or []
+                            text2 = "".join(p.get("text", "") for p in parts2 if p.get("text"))
+                            if text2:
+                                current_app.logger.info(f"Gemini OK (plain): {model_name}")
+                                return text2
+                    except Exception as e2:
+                        current_app.logger.warning(f"Gemini plain retry fail ({model_name}): {str(e2)[:120]}")
+                        continue
+                current_app.logger.warning(f"Gemini 400 ({model_name}): {err_str[:120]}")
                 continue
             else:
                 current_app.logger.warning(f"Gemini error ({model_name}): {err_str[:120]}")
@@ -72,8 +123,9 @@ def _call_gemini(prompt: str, system: str = "") -> str:
 def _call_openai(messages: list, max_tokens: int = 800) -> str:
     """Gọi OpenAI qua REST HTTP – không phụ thuộc SDK version."""
     import json, urllib.request
-    api_key = current_app.config.get("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-    if not api_key or api_key == "your-openai-api-key":
+    from app.services.secret_store import get_openai_api_key
+    api_key = get_openai_api_key()
+    if not api_key:
         return None
     payload = json.dumps({
         "model": "gpt-4o-mini",
@@ -104,39 +156,48 @@ def _get_provider():
     return provider.lower()
 
 
-def _call_ai(prompt: str, system: str = "", max_tokens: int = 800) -> tuple[str, str]:
+def _call_ai(
+    prompt: str,
+    system: str = "",
+    max_tokens: int = 800,
+    *,
+    json_mode: bool = False,
+    timeout: int | None = None,
+) -> tuple[str, str]:
     """
     Gọi AI theo thứ tự ưu tiên.
     Returns: (response_text, source_label)
     """
     provider = _get_provider()
-    
-    if provider == "gemini":
-        text = _call_gemini(prompt, system)
-        if text:
-            return text, "gemini"
-        # Fallback sang OpenAI
+    gemini_timeout = timeout or (90 if json_mode or max_tokens >= 1500 else 30)
+    gemini_kwargs = {
+        "json_mode": json_mode,
+        "timeout": gemini_timeout,
+        "max_output_tokens": max(max_tokens, 1024),
+    }
+
+    def _openai_messages():
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": prompt})
-        text = _call_openai(messages, max_tokens)
+        return messages
+
+    if provider == "gemini":
+        text = _call_gemini(prompt, system, **gemini_kwargs)
+        if text:
+            return text, "gemini"
+        text = _call_openai(_openai_messages(), max_tokens)
         if text:
             return text, "openai"
     else:
-        # OpenAI first
-        messages = []
-        if system:
-            messages.append({"role": "system", "content": system})
-        messages.append({"role": "user", "content": prompt})
-        text = _call_openai(messages, max_tokens)
+        text = _call_openai(_openai_messages(), max_tokens)
         if text:
             return text, "openai"
-        # Fallback sang Gemini
-        text = _call_gemini(prompt, system)
+        text = _call_gemini(prompt, system, **gemini_kwargs)
         if text:
             return text, "gemini"
-    
+
     return None, None
 
 

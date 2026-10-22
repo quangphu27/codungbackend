@@ -52,6 +52,7 @@ logs/
 uploads/
 tmp/
 temp/
+scripts/_studio_out/
 
 # IDE
 .vscode/

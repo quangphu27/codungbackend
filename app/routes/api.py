@@ -597,25 +597,122 @@ def home_data():
     })
 
 
+SECRET_SETTING_KEYS = {
+    "gemini_api_key_enc",
+    "openai_api_key_enc",
+}
+
+
 @settings_bp.route("/", methods=["GET"])
 @jwt_required()
 def get_settings():
     db = get_db()
-    settings = {s["key"]: s["value"] for s in db.settings.find()}
+    settings = {}
+    for s in db.settings.find():
+        key = s.get("key")
+        if key in SECRET_SETTING_KEYS:
+            continue
+        settings[key] = s.get("value")
     return jsonify(settings)
 
 
 @settings_bp.route("/", methods=["PUT"])
 @jwt_required()
+@admin_required
 def update_settings():
-    from app.middlewares.auth import admin_required
     data = request.get_json() or {}
     db = get_db()
 
     for key, value in data.items():
+        if key in SECRET_SETTING_KEYS:
+            continue
         db.settings.update_one(
             {"key": key},
             {"$set": {"key": key, "value": value, "updated_at": utc_now()}},
             upsert=True,
         )
     return jsonify({"message": "Cập nhật cài đặt thành công"})
+
+
+@settings_bp.route("/ai-keys", methods=["GET"])
+@jwt_required()
+@admin_required
+def get_ai_keys_status():
+    from app.services.secret_store import (
+        GEMINI_SETTING_KEY,
+        OPENAI_SETTING_KEY,
+        decrypt_secret,
+        mask_secret,
+        get_gemini_api_key,
+        get_openai_api_key,
+    )
+
+    db = get_db()
+    gemini_doc = db.settings.find_one({"key": GEMINI_SETTING_KEY})
+    openai_doc = db.settings.find_one({"key": OPENAI_SETTING_KEY})
+    gemini_plain = decrypt_secret((gemini_doc or {}).get("value") or "") if gemini_doc else None
+    openai_plain = decrypt_secret((openai_doc or {}).get("value") or "") if openai_doc else None
+
+    return jsonify({
+        "gemini": {
+            "configured": bool(get_gemini_api_key()),
+            "stored_in_db": bool(gemini_plain),
+            "masked": mask_secret(gemini_plain),
+            "updated_at": gemini_doc.get("updated_at").isoformat() if gemini_doc and gemini_doc.get("updated_at") else None,
+        },
+        "openai": {
+            "configured": bool(get_openai_api_key()),
+            "stored_in_db": bool(openai_plain),
+            "masked": mask_secret(openai_plain),
+            "updated_at": openai_doc.get("updated_at").isoformat() if openai_doc and openai_doc.get("updated_at") else None,
+        },
+        "message": "Key được mã hóa trong database; API không trả về giá trị đầy đủ.",
+    })
+
+
+@settings_bp.route("/ai-keys", methods=["PUT"])
+@jwt_required()
+@admin_required
+def update_ai_keys():
+    from app.services.secret_store import (
+        GEMINI_SETTING_KEY,
+        OPENAI_SETTING_KEY,
+        encrypt_secret,
+        PLACEHOLDER_KEYS,
+    )
+
+    data = request.get_json() or {}
+    db = get_db()
+    updated = []
+
+    gemini = (data.get("gemini_api_key") or "").strip()
+    openai = (data.get("openai_api_key") or "").strip()
+    clear_gemini = bool(data.get("clear_gemini"))
+    clear_openai = bool(data.get("clear_openai"))
+
+    if clear_gemini:
+        db.settings.delete_one({"key": GEMINI_SETTING_KEY})
+        updated.append("gemini_cleared")
+    elif gemini and gemini not in PLACEHOLDER_KEYS:
+        db.settings.update_one(
+            {"key": GEMINI_SETTING_KEY},
+            {"$set": {"key": GEMINI_SETTING_KEY, "value": encrypt_secret(gemini), "updated_at": utc_now()}},
+            upsert=True,
+        )
+        updated.append("gemini")
+
+    if clear_openai:
+        db.settings.delete_one({"key": OPENAI_SETTING_KEY})
+        updated.append("openai_cleared")
+    elif openai and openai not in PLACEHOLDER_KEYS:
+        db.settings.update_one(
+            {"key": OPENAI_SETTING_KEY},
+            {"$set": {"key": OPENAI_SETTING_KEY, "value": encrypt_secret(openai), "updated_at": utc_now()}},
+            upsert=True,
+        )
+        updated.append("openai")
+
+    if not updated:
+        return jsonify({"message": "Không có key nào được cập nhật"}), 400
+
+    return jsonify({"message": "Đã lưu API key (mã hóa) vào database", "updated": updated})
