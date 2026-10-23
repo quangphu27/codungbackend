@@ -79,7 +79,7 @@ def _base_payload():
         "quiz_requirements": _text(data.get("quiz_requirements")),
         "num_questions": _int(data.get("num_questions", 10), 10, 4, 20),
         "difficulty": _text(data.get("difficulty"), "mixed") or "mixed",
-        "slide_count": _int(data.get("slide_count", 10), 10, 6, 16),
+        "slide_count": _int(data.get("slide_count", 10), 10, 6, 20),
         "lesson": data.get("lesson") if isinstance(data.get("lesson"), dict) else None,
         "quiz": data.get("quiz") if isinstance(data.get("quiz"), dict) else None,
         "deck": data.get("deck") if isinstance(data.get("deck"), dict) else None,

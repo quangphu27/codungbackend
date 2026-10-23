@@ -869,7 +869,58 @@ def _fallback_slides(grade: str, subject: str, topic: str, slide_count: int, lan
             "image_keyword": "celebration",
         },
     ]
-    for s in slides:
+    extras = [
+        {
+            "layout": "content",
+            "title": f"Why {topic} matters",
+            "bullets": ["School life connection", "Skills we build today", "Respect and responsibility"],
+            "image_keyword": "vietnamese students listening teacher classroom",
+        },
+        {
+            "layout": "two_column",
+            "title": "Do and Don't",
+            "left_title": "Do",
+            "right_title": "Don't",
+            "left_bullets": ["Listen and join in", "Help classmates", "Follow the teacher"],
+            "right_bullets": ["Talk over others", "Ignore the task", "Leave the group"],
+            "image_keyword": "vietnamese students classroom rules",
+        },
+        {
+            "layout": "content",
+            "title": "Step by step",
+            "bullets": ["Watch the model", "Try with a partner", "Share one sentence", "Improve together"],
+            "image_keyword": "students practising in pairs vietnam school",
+        },
+        {
+            "layout": "cards",
+            "title": "Roles in the activity",
+            "bullets": ["Leader", "Recorder", "Speaker", "Timekeeper"],
+            "image_keyword": "vietnamese students group roles classroom",
+        },
+        {
+            "layout": "content",
+            "title": "Check for understanding",
+            "bullets": ["One key idea", "One example from school", "One question for the teacher"],
+            "image_keyword": "student answering question vietnam classroom",
+        },
+        {
+            "layout": "content",
+            "title": "Home connection",
+            "bullets": ["Tell family one idea", "Practise one phrase", "Bring one example next lesson"],
+            "image_keyword": "vietnam family home students homework",
+        },
+    ]
+    n = max(6, min(int(slide_count or 10), 20))
+    title_slide, closing = slides[0], slides[-1]
+    middles = slides[1:-1] + extras
+    out = [title_slide]
+    for i in range(n - 2):
+        item = dict(middles[i % len(middles)])
+        if i >= len(middles):
+            item["title"] = f"{item.get('title')} ({i // len(middles) + 2})"
+        out.append(item)
+    out.append(closing)
+    for s in out:
         if not s.get("notes"):
             s["notes"] = (
                 f"Gợi ý giảng: trình bày slide “{s.get('title')}” bằng tiếng Anh; "
@@ -881,7 +932,7 @@ def _fallback_slides(grade: str, subject: str, topic: str, slide_count: int, lan
         "subject": subject,
         "topic": topic,
         "language": language or "vi",
-        "slides": slides[: max(6, min(slide_count, 16))],
+        "slides": out,
         "source": "template",
         "note": "Bản slide mẫu (AI chưa sẵn sàng).",
     }
@@ -1222,7 +1273,8 @@ def _normalize_pptx_slides(slides: list, topic: str, language: str = "vi") -> li
     layouts_ok = {"title", "content", "two_column", "table", "cards", "closing"}
     normalized = []
     total = len(slides)
-    for idx, s in enumerate(slides[:16]):
+    limit = min(20, max(len(slides), 6))
+    for idx, s in enumerate(slides[:limit]):
         if not isinstance(s, dict):
             continue
         layout = str(s.get("layout") or "").lower().strip()
@@ -1346,6 +1398,59 @@ def _enrich_image_keywords(slides: list[dict], topic: str) -> list[dict]:
     return slides
 
 
+def _fit_slide_count(slides: list, slide_count: int, topic: str, language: str) -> list[dict]:
+    """Cắt hoặc bổ sung cho đúng số slide giáo viên yêu cầu."""
+    n = max(6, min(int(slide_count or 10), 20))
+    items = [s for s in (slides or []) if isinstance(s, dict)]
+    if len(items) == n:
+        if items:
+            items[0]["layout"] = "title"
+            items[-1]["layout"] = "closing"
+        return items
+    if len(items) > n:
+        head, tail = items[0], items[-1]
+        mid = items[1:-1][: max(0, n - 2)]
+        out = [head] + mid
+        if n >= 2:
+            if str(tail.get("layout") or "") != "closing":
+                tail = {**tail, "layout": "closing"}
+            out.append(tail)
+        out[0]["layout"] = "title"
+        return out[:n]
+    fb = _fallback_slides("", "", topic, n, language).get("slides") or []
+    closing = None
+    core = list(items)
+    if core and str(core[-1].get("layout") or "") == "closing":
+        closing = core.pop()
+    if not core and fb:
+        core = [fb[0]]
+    extras = [s for s in fb[1:-1] if isinstance(s, dict)]
+    seen = {str(s.get("title") or "").strip().lower() for s in core}
+    i = 0
+    while len(core) < n - 1 and extras:
+        extra = dict(extras[i % len(extras)])
+        title = str(extra.get("title") or f"Slide {len(core) + 1}")
+        if title.lower() in seen:
+            title = f"{title} ({len(core) + 1})"
+            extra["title"] = title
+        seen.add(title.lower())
+        core.append(extra)
+        i += 1
+        if i > 40:
+            break
+    if closing is None:
+        closing = fb[-1] if fb else {
+            "layout": "closing", "title": "Thank You",
+            "bullets": ["Questions welcome", "See you next lesson"],
+            "notes": "Tổng kết và hỏi HS còn thắc mắc gì.",
+        }
+    core.append(closing)
+    if core:
+        core[0]["layout"] = "title"
+        core[-1]["layout"] = "closing"
+    return core[:n]
+
+
 def generate_pptx_draft(
     grade: str,
     subject: str,
@@ -1359,7 +1464,7 @@ def generate_pptx_draft(
     theme_accent: str = "#F39C4A",
 ) -> dict:
     language = "en"
-    slide_count = max(6, min(int(slide_count or 10), 16))
+    slide_count = max(6, min(int(slide_count or 10), 20))
     context_hint = ""
     follow_lesson = ""
     if lesson_context:
@@ -1460,9 +1565,10 @@ Tạo dàn ý PowerPoint JSON (slide đẹp, giảng được, ảnh sát từng
 }}
 
 Rules:
-- Exactly {slide_count} slides.
+- Return exactly {min(slide_count, 7)} slides in THIS response (first part of a {slide_count}-slide deck).
+- Do not write the closing slide yet unless {slide_count} <= 7.
 - {lang_rule}
-- Slide 1 layout=title; last slide layout=closing.
+- Slide 1 layout=title. Closing slide only in the final batch.
 - Include at least one layout=table, one layout=two_column, and one layout=cards.
 - Content slides: 4–6 bullets, mỗi bullet 8–20 từ.
 - two_column: 4 bullets mỗi cột.
@@ -1479,45 +1585,45 @@ Rules:
 - Màu chủ đạo: {theme_color} / {theme_accent}.
 {context_hint}
 """
+    first_n = min(slide_count, 7)
     compact_pptx = (
-        f"{brief_txt}\nJSON PowerPoint, exactly {slide_count} slides, short bullets, complete JSON, no truncate.\n"
+        f"{brief_txt}\nJSON PowerPoint, exactly {first_n} slides, short bullets, complete JSON.\n"
         '{"title":"...","slides":[{"layout":"title","title":"...","bullets":["..."],"notes":"..."}]}\n'
-        "Slide 1 title, last closing. English on slide, Vietnamese notes."
+        "Slide 1 title. English on slide, Vietnamese notes."
     )
     try:
         data, source = _ask_studio_json(
-            prompt, system_en, max_tokens=4096, timeout=45, compact_prompt=compact_pptx,
+            prompt, system_en, max_tokens=3072, timeout=40, compact_prompt=compact_pptx,
         )
         slides = (data or {}).get("slides") if data else None
         if not isinstance(slides, list):
             slides = []
-        need = slide_count - len(slides)
-        if need > 0:
+        rounds = 0
+        while len(slides) < slide_count and rounds < 3:
+            need = min(6, slide_count - len(slides))
             titles = [str(s.get("title") or "") for s in slides if isinstance(s, dict)]
+            last_batch = len(slides) + need >= slide_count
             more, src2 = _ask_studio_json(
                 f"""{brief_txt}
-Add {need} MORE slides after these titles: {titles}. JSON: {{"slides":[...]}}.
+Create exactly {need} MORE slides. JSON: {{"slides":[...]}}.
+Do not repeat these titles: {titles}.
 English on-slide text, Vietnamese notes. Topic "{topic}".
+{"The LAST slide must be layout=closing." if last_batch else "Do not use closing layout yet."}
+Short bullets. Complete JSON, do not truncate.
 """,
-                system_en, max_tokens=2048, timeout=30,
+                system_en, max_tokens=3072, timeout=35,
             )
-            if more and isinstance(more.get("slides"), list):
-                slides = slides + more["slides"]
-                source = source or src2
-                data = data or {"title": topic}
+            extra = (more or {}).get("slides") if more else None
+            if not isinstance(extra, list) or not extra:
+                break
+            slides.extend(extra)
+            source = source or src2
+            data = data or {"title": topic}
+            rounds += 1
         normalized = _normalize_pptx_slides(slides, topic, language)
         normalized = _enrich_image_keywords(normalized, topic)
-        if len(normalized) < 4:
-            fb = _fallback_slides(grade, subject, topic, slide_count, language)
-            if data and (data.get("title") or slides):
-                fb["source"] = source or "gemini"
-                fb.pop("note", None)
-            fb["theme_color"] = theme_color
-            fb["theme_accent"] = theme_accent
-            fb["description"] = description
-            fb["based_on_lesson"] = bool(lesson_context)
-            return fb
-        return _pack(data or {}, source, normalized)
+        normalized = _fit_slide_count(normalized, slide_count, topic, language)
+        return _pack(data or {"title": topic}, source or "gemini", normalized)
     except Exception:
         current_app.logger.exception("generate_pptx_draft failed")
         try:
@@ -1526,8 +1632,8 @@ English on-slide text, Vietnamese notes. Topic "{topic}".
             normalized = _enrich_image_keywords(
                 _normalize_pptx_slides(slides or [], topic, language), topic,
             )
-            if len(normalized) >= 4:
-                return _pack(compact or {}, src, normalized)
+            normalized = _fit_slide_count(normalized, slide_count, topic, language)
+            return _pack(compact or {"title": topic}, src or "gemini", normalized)
         except Exception:
             current_app.logger.exception("generate_pptx_draft compact failed")
         fb = _fallback_slides(grade, subject, topic, slide_count, language)
