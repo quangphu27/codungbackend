@@ -142,7 +142,14 @@ def generate_lesson():
     except Exception:
         from flask import current_app
         current_app.logger.exception("POST /studio/generate/lesson")
-        return jsonify({"message": "Không tạo được giáo án. Thử lại sau ít phút."}), 502
+        lesson = studio_service._fallback_lesson(
+            payload["grade"], payload["subject"], payload["topic"],
+            "bilingual", payload["description"],
+        )
+        lesson["source"] = "template"
+        lesson.pop("note", None)
+        lesson["theme_color"] = payload["theme_color"]
+        lesson["theme_accent"] = payload["theme_accent"]
 
     draft = None
     if payload["save"]:

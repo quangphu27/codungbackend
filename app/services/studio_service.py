@@ -938,6 +938,18 @@ def _fallback_slides(grade: str, subject: str, topic: str, slide_count: int, lan
     }
 
 
+def _json_safe(obj):
+    if isinstance(obj, dict):
+        return {str(k): _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_json_safe(v) for v in obj[:40]]
+    if isinstance(obj, bool) or obj is None:
+        return obj
+    if isinstance(obj, (int, float)):
+        return obj
+    return str(obj)
+
+
 def generate_lesson_draft(
     grade: str,
     subject: str,
@@ -955,12 +967,6 @@ def generate_lesson_draft(
         theme_color=theme_color, theme_accent=theme_accent,
     )
 
-    def _section_n(data: dict | None) -> int:
-        return len([
-            s for s in (data or {}).get("sections") or []
-            if isinstance(s, dict) and (s.get("heading_vi") or s.get("content_vi"))
-        ])
-
     def _finish(data: dict | None, source: str | None) -> dict:
         fb = _fallback_lesson(grade, subject, topic, language, description)
         if data:
@@ -969,135 +975,55 @@ def generate_lesson_draft(
         else:
             out = fb
             out["source"] = "template"
-        out.setdefault("grade", grade)
-        out.setdefault("subject", subject)
-        out.setdefault("topic", topic)
-        out.setdefault("description", description)
-        out.setdefault("duration_minutes", 45)
+        out["grade"] = grade
+        out["subject"] = subject
+        out["topic"] = topic
+        out["description"] = out.get("description") or description
+        out["duration_minutes"] = _as_int(out.get("duration_minutes"), 45)
         out["language"] = language
         out["theme_color"] = theme_color
         out["theme_accent"] = theme_accent
         out.pop("note", None)
-        return out
+        return _json_safe(out)
 
-    part1_prompt = f"""
+    prompt = f"""
 {brief}
-Soạn NỬA ĐẦU giáo án song ngữ JSON (không cắt):
+Soạn giáo án trải nghiệm SONG NGỮ, JSON đầy đủ một lần (không cắt):
 {{
   "title_vi": "...", "title_en": "...",
-  "description": "3-4 câu",
+  "description": "2-3 câu tiếng Việt",
   "duration_minutes": 45,
-  "materials": ["đồ dùng cụ thể"],
-  "objectives_vi": ["..."], "objectives_en": ["..."],
-  "knowledge_vi": ["..."], "knowledge_en": ["..."],
-  "skills_vi": ["..."], "skills_en": ["..."],
-  "core_content_vi": "80-120 chữ, trường Việt Nam, đúng chủ đề",
-  "core_content_en": "English equivalent",
+  "materials": ["đồ dùng 1", "đồ dùng 2", "đồ dùng 3", "đồ dùng 4"],
+  "objectives_vi": ["mục tiêu 1", "mục tiêu 2", "mục tiêu 3"],
+  "objectives_en": ["objective 1", "objective 2", "objective 3"],
+  "core_content_vi": "60-90 chữ đúng chủ đề, trường Việt Nam",
+  "core_content_en": "English equivalent, 60-90 words",
   "sections": [
-    {{
-      "heading_vi": "Khởi động", "heading_en": "Warm-up", "duration": "5'",
-      "content_vi": "4-7 câu GV–HS", "content_en": "...",
-      "procedure_steps": ["Bước 1: ...", "Bước 2: ..."],
-      "teacher_activity": "...", "teacher_activity_en": "...",
-      "student_activity": "...", "student_activity_en": "...",
-      "questions": ["..."]
-    }}
-  ]
-}}
-3 sections: Khởi động; Hình thành kiến thức; Trải nghiệm chính.
-Đúng lớp {grade}, môn {subject}, chủ đề "{topic}". JSON đầy đủ.
-"""
-    part2_prompt = f"""
-{brief}
-Soạn NỬA SAU giáo án song ngữ JSON (không cắt):
-{{
-  "sections": [
-    {{
-      "heading_vi": "Luyện tập/vận dụng", "heading_en": "Practice", "duration": "8'",
-      "content_vi": "4-7 câu", "content_en": "...",
-      "procedure_steps": ["Bước 1: ..."],
-      "teacher_activity": "...", "teacher_activity_en": "...",
-      "student_activity": "...", "student_activity_en": "..."
-    }}
+    {{"heading_vi":"Khởi động","heading_en":"Warm-up","duration":"5'","content_vi":"3-5 câu","content_en":"3-5 sentences","teacher_activity":"...","student_activity":"...","procedure_steps":["Bước 1","Bước 2"]}},
+    {{"heading_vi":"Hình thành kiến thức","heading_en":"Knowledge","duration":"10'","content_vi":"3-5 câu","content_en":"...","teacher_activity":"...","student_activity":"...","procedure_steps":["Bước 1","Bước 2"]}},
+    {{"heading_vi":"Trải nghiệm chính","heading_en":"Experience","duration":"15'","content_vi":"3-5 câu","content_en":"...","teacher_activity":"...","student_activity":"...","procedure_steps":["Bước 1","Bước 2"]}},
+    {{"heading_vi":"Luyện tập","heading_en":"Practice","duration":"8'","content_vi":"3-5 câu","content_en":"...","teacher_activity":"...","student_activity":"...","procedure_steps":["Bước 1","Bước 2"]}},
+    {{"heading_vi":"Phản ánh – đánh giá","heading_en":"Reflection","duration":"7'","content_vi":"3-5 câu","content_en":"...","teacher_activity":"...","student_activity":"...","procedure_steps":["Bước 1","Bước 2"]}}
   ],
-  "vocabulary": [{{"term": "...", "meaning_vi": "...", "example": "..."}}],
-  "assessment": {{"methods": ["..."], "criteria": ["..."], "rubric": ["Đạt: ..."]}},
-  "homework": ["nhiệm vụ cụ thể"],
-  "differentiation": "2-4 câu hỗ trợ HS yếu / khá",
-  "notes": "tổ chức lớp, an toàn"
+  "vocabulary": [{{"term":"...","meaning_vi":"...","example":"..."}}],
+  "homework": ["nhiệm vụ 1", "nhiệm vụ 2"]
 }}
-3 sections: Luyện tập/vận dụng; Trình bày sản phẩm; Phản ánh – đánh giá.
-vocabulary 6 từ. Đúng chủ đề "{topic}". JSON đầy đủ.
+Đúng lớp {grade}, môn {subject}, chủ đề "{topic}". 5 sections, 5 từ vựng. Mỗi content 3-5 câu. JSON hoàn chỉnh.
 """
-    compact_whole = f"""
+    compact = f"""
 {brief}
-JSON giáo án song ngữ NGẮN NHƯNG ĐỦ (không cắt):
-{{
-  "title_vi":"...","title_en":"...",
-  "objectives_vi":["..."],"objectives_en":["..."],
-  "core_content_vi":"...","core_content_en":"...",
-  "sections":[
-    {{"heading_vi":"Khởi động","heading_en":"Warm-up","duration":"5'","content_vi":"...","content_en":"...","teacher_activity":"...","student_activity":"..."}},
-    {{"heading_vi":"Hình thành kiến thức","heading_en":"Knowledge","duration":"10'","content_vi":"...","content_en":"...","teacher_activity":"...","student_activity":"..."}},
-    {{"heading_vi":"Trải nghiệm chính","heading_en":"Experience","duration":"15'","content_vi":"...","content_en":"...","teacher_activity":"...","student_activity":"..."}},
-    {{"heading_vi":"Phản ánh – đánh giá","heading_en":"Reflection","duration":"10'","content_vi":"...","content_en":"...","teacher_activity":"...","student_activity":"..."}}
-  ],
-  "vocabulary":[{{"term":"...","meaning_vi":"...","example":"..."}}],
-  "homework":["..."]
-}}
-4 sections, bilingual, topic "{topic}".
+JSON giáo án song ngữ ngắn, đủ 4 phần, không cắt:
+{{"title_vi":"...","title_en":"...","objectives_vi":["..."],"objectives_en":["..."],"core_content_vi":"...","core_content_en":"...","sections":[{{"heading_vi":"Khởi động","heading_en":"Warm-up","duration":"5'","content_vi":"...","content_en":"...","teacher_activity":"...","student_activity":"..."}},{{"heading_vi":"Kiến thức","heading_en":"Knowledge","duration":"12'","content_vi":"...","content_en":"...","teacher_activity":"...","student_activity":"..."}},{{"heading_vi":"Trải nghiệm","heading_en":"Activity","duration":"18'","content_vi":"...","content_en":"...","teacher_activity":"...","student_activity":"..."}},{{"heading_vi":"Phản ánh","heading_en":"Reflection","duration":"10'","content_vi":"...","content_en":"...","teacher_activity":"...","student_activity":"..."}}],"vocabulary":[{{"term":"...","meaning_vi":"...","example":"..."}}],"homework":["..."]}}
+Chủ đề "{topic}".
 """
     try:
-        part1, src1 = _ask_studio_json(
-            part1_prompt, SYSTEM_LESSON, max_tokens=4096, timeout=40,
-            compact_prompt=compact_whole,
+        data, source = _ask_studio_json(
+            prompt, SYSTEM_LESSON, max_tokens=4096, timeout=40, compact_prompt=compact,
         )
-        part2, src2 = _ask_studio_json(
-            part2_prompt, SYSTEM_LESSON, max_tokens=3072, timeout=35,
-        )
-        data = _merge_ai_json(part1, part2)
-        source = src1 or src2
-
-        if _section_n(data) < 4:
-            have = json.dumps({
-                "title_vi": data.get("title_vi"),
-                "headings": [
-                    s.get("heading_vi") for s in (data.get("sections") or []) if isinstance(s, dict)
-                ],
-            }, ensure_ascii=False)[:1200]
-            more, src3 = _ask_studio_json(
-                f"""{brief}
-JSON giáo án trước còn thiếu sections. Đã có: {have}
-Trả JSON phần CÒN THIẾU, đủ tổng 6 phần:
-{{"sections":[{{"heading_vi":"...","heading_en":"...","duration":"8'","content_vi":"4-6 câu","content_en":"...","teacher_activity":"...","student_activity":"..."}}],
- "vocabulary":[{{"term":"...","meaning_vi":"...","example":"..."}}]}}
-Các heading còn thiếu: Hình thành kiến thức; Trải nghiệm chính; Luyện tập/vận dụng; Trình bày sản phẩm; Phản ánh – đánh giá.
-Chủ đề "{topic}". JSON đầy đủ, không cắt.
-""",
-                SYSTEM_LESSON, max_tokens=3072, timeout=35,
-                compact_prompt=compact_whole,
-            )
-            if more:
-                data = _merge_ai_json(data, more)
-                source = source or src3
-
-        if _section_n(data) < 4 and not (data.get("title_vi") or data.get("objectives_vi")):
-            compact, src4 = _ask_studio_json(
-                compact_whole, SYSTEM_LESSON, max_tokens=3072, timeout=35,
-            )
-            if compact:
-                data = _merge_ai_json(data, compact)
-                source = source or src4
-
-        return _finish(data if (data.get("title_vi") or _section_n(data) or data.get("objectives_vi")) else None, source)
+        return _finish(data, source)
     except Exception:
         current_app.logger.exception("generate_lesson_draft failed")
-        try:
-            compact, src = _ask_studio_json(compact_whole, SYSTEM_LESSON, max_tokens=2048, timeout=30)
-            return _finish(compact, src)
-        except Exception:
-            current_app.logger.exception("generate_lesson_draft compact failed")
-            return _finish(None, None)
+        return _finish(None, None)
 
 
 def _quiz_ai_fail_message() -> str:
