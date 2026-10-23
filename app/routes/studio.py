@@ -266,7 +266,7 @@ def generate_eight_step():
             {}, payload["grade"], payload["subject"], payload["topic"], payload["description"],
         )
         eight["source"] = "template"
-        eight["note"] = "AI gặp lỗi khi soạn bài học. Đã dùng bản khung — hãy tạo lại."
+        eight.pop("note", None)
     draft = None
     if payload["save"]:
         try:

@@ -39,6 +39,12 @@ SYSTEM_TEACHER = (
     "Trả về đúng JSON, không markdown."
 )
 
+SYSTEM_LESSON = (
+    "Bạn soạn giáo án trải nghiệm song ngữ Việt–Anh theo GDPT 2018. "
+    "JSON hợp lệ, đủ field, không markdown, không cắt giữa chừng. "
+    "Mỗi content_vi/content_en khoảng 4–7 câu. Đúng lớp, môn, chủ đề giáo viên đưa."
+)
+
 SYSTEM_EIGHT_STEP = (
     "You create 8-step experiential English lessons for Vietnamese secondary students. "
     "Student-facing text in English. meaning_vi and reading translation in Vietnamese. "
@@ -223,6 +229,97 @@ def _parse_json(text: str) -> dict | None:
             continue
     current_app.logger.warning("Studio AI JSON parse failed")
     return None
+
+
+def _ask_studio_json(
+    prompt: str,
+    system: str,
+    *,
+    max_tokens: int = 4096,
+    timeout: int = 40,
+    compact_prompt: str | None = None,
+) -> tuple[dict | None, str | None]:
+    """Gọi AI lấy JSON. Nếu lỗi/rỗng thì gọi lại bản gọn hơn."""
+    data = None
+    source = None
+    try:
+        text, source = _call_ai(
+            prompt, system, max_tokens=max_tokens, json_mode=True, timeout=timeout,
+        )
+        data = _parse_json(text) if text else None
+        if data:
+            return data, source or "gemini"
+    except Exception:
+        current_app.logger.exception("studio AI call failed")
+    retry = compact_prompt or (
+        "Return COMPLETE valid JSON only. Keep every text field short (2-5 sentences). Do not truncate.\n\n"
+        + (prompt if len(prompt) < 6000 else prompt[-5500:])
+    )
+    try:
+        text, source = _call_ai(
+            retry, system,
+            max_tokens=min(int(max_tokens), 3072),
+            json_mode=True,
+            timeout=min(int(timeout), 35),
+        )
+        data = _parse_json(text) if text else None
+        if data:
+            return data, source or "gemini"
+    except Exception:
+        current_app.logger.exception("studio AI compact retry failed")
+    return None, None
+
+
+def _merge_ai_json(base: dict | None, extra: dict | None) -> dict:
+    if not extra:
+        return dict(base or {})
+    if not base:
+        return dict(extra)
+    out = dict(base)
+    for key, val in extra.items():
+        if key in ("sections", "slides", "questions", "vocabulary", "materials", "homework",
+                   "objectives_vi", "objectives_en", "knowledge_vi", "knowledge_en"):
+            cur = list(out.get(key) or []) if isinstance(out.get(key), list) else []
+            add = val if isinstance(val, list) else []
+            if key == "sections":
+                ai_list = [s for s in add if isinstance(s, dict)]
+                fb_list = [s for s in cur if isinstance(s, dict)]
+                if len(ai_list) >= 4:
+                    out[key] = ai_list
+                else:
+                    seen = {
+                        (str(s.get("heading_vi") or ""), str(s.get("heading_en") or ""))
+                        for s in ai_list
+                    }
+                    mixed = list(ai_list)
+                    for item in fb_list:
+                        mark = (str(item.get("heading_vi") or ""), str(item.get("heading_en") or ""))
+                        if mark not in seen:
+                            mixed.append(item)
+                            seen.add(mark)
+                    out[key] = mixed
+            elif key == "vocabulary":
+                seen = {
+                    str(x.get("term") or x.get("word") or "").strip().lower()
+                    for x in cur if isinstance(x, dict)
+                }
+                for item in add:
+                    if not isinstance(item, dict):
+                        continue
+                    term = str(item.get("term") or item.get("word") or "").strip().lower()
+                    if term and term not in seen:
+                        cur.append(item)
+                        seen.add(term)
+                out[key] = cur
+            elif key in ("questions", "slides"):
+                out[key] = cur + add if cur else add
+            else:
+                out[key] = cur if cur else add
+        elif val not in (None, "", [], {}):
+            out[key] = val
+        elif key not in out:
+            out[key] = val
+    return out
 
 
 def _brief_requirements(description: str = "", extra: str = "", quiz_req: str = "") -> str:
@@ -806,98 +903,150 @@ def generate_lesson_draft(
         description=description, extra_requirements=extra_requirements,
         theme_color=theme_color, theme_accent=theme_accent,
     )
-    lang_rule = (
-        "GIÁO ÁN SONG NGỮ BẮT BUỘC: mỗi mục có đủ tiếng Việt VÀ tiếng Anh, độ dài tương đương, "
-        "không rút gọn một phía. title_vi + title_en; objectives_vi + objectives_en; "
-        "knowledge/skills/qualities cả VI và EN; mỗi section có heading_vi/heading_en, content_vi/content_en, "
-        "teacher_activity và student_activity bằng tiếng Việt, kèm teacher_activity_en / student_activity_en."
-    )
-    prompt = f"""
-{brief}
 
-Soạn GIÁO ÁN TRẢI NGHIỆM ĐẦY ĐỦ, DÀI, dùng được luôn trên lớp (không viết ngắn/sơ sài). JSON:
+    def _section_n(data: dict | None) -> int:
+        return len([
+            s for s in (data or {}).get("sections") or []
+            if isinstance(s, dict) and (s.get("heading_vi") or s.get("content_vi"))
+        ])
+
+    def _finish(data: dict | None, source: str | None) -> dict:
+        fb = _fallback_lesson(grade, subject, topic, language, description)
+        if data:
+            out = _merge_ai_json(fb, data)
+            out["source"] = source or "gemini"
+        else:
+            out = fb
+            out["source"] = "template"
+        out.setdefault("grade", grade)
+        out.setdefault("subject", subject)
+        out.setdefault("topic", topic)
+        out.setdefault("description", description)
+        out.setdefault("duration_minutes", 45)
+        out["language"] = language
+        out["theme_color"] = theme_color
+        out["theme_accent"] = theme_accent
+        out.pop("note", None)
+        return out
+
+    part1_prompt = f"""
+{brief}
+Soạn NỬA ĐẦU giáo án song ngữ JSON (không cắt):
 {{
-  "title_vi": "...",
-  "title_en": "...",
-  "grade": "{grade}",
-  "subject": "{subject}",
-  "topic": "{topic}",
-  "description": "diễn giải lại mô tả GV thành đoạn 4-6 câu",
+  "title_vi": "...", "title_en": "...",
+  "description": "3-4 câu",
   "duration_minutes": 45,
-  "materials": ["đồ dùng cụ thể, có màu {theme_color}/{theme_accent} nếu trang trí"],
-  "objectives_vi": ["năng lực/phẩm chất/kiến thức — mỗi mục 1-2 câu"],
-  "objectives_en": ["..."],
-  "knowledge_vi": ["kiến thức trọng tâm, mỗi ý 2-3 câu"],
-  "knowledge_en": ["core knowledge, 2-3 sentences each"],
-  "skills_vi": ["kỹ năng"],
-  "skills_en": ["skills"],
-  "qualities_vi": ["phẩm chất"],
-  "qualities_en": ["qualities"],
-  "core_content_vi": "Bài viết 180-280 chữ: kiến thức cốt lõi GV sẽ dạy, ví dụ thực tế trường Việt Nam, gắn đúng chủ đề và mô tả.",
-  "core_content_en": "Full English equivalent of core_content_vi (not a short summary).",
+  "materials": ["đồ dùng cụ thể"],
+  "objectives_vi": ["..."], "objectives_en": ["..."],
+  "knowledge_vi": ["..."], "knowledge_en": ["..."],
+  "skills_vi": ["..."], "skills_en": ["..."],
+  "core_content_vi": "80-120 chữ, trường Việt Nam, đúng chủ đề",
+  "core_content_en": "English equivalent",
   "sections": [
     {{
-      "heading_vi": "...",
-      "heading_en": "...",
-      "duration": "7'",
-      "content_vi": "8-14 câu: mục tiêu hoạt động, cách tiến hành từng bước, câu hỏi GV, câu trả lời dự kiến, sản phẩm HS.",
-      "content_en": "...",
-      "procedure_steps": ["Bước 1: ...", "Bước 2: ...", "Bước 3: ..."],
-      "teacher_activity": "lời/hành động GV cụ thể (tiếng Việt)",
-      "teacher_activity_en": "teacher talk/actions in English",
-      "student_activity": "việc HS làm cụ thể (tiếng Việt)",
-      "student_activity_en": "student actions in English",
-      "expected_product": "sản phẩm/kết quả quan sát được",
-      "questions": ["câu hỏi gợi mở 1", "câu hỏi 2"]
+      "heading_vi": "Khởi động", "heading_en": "Warm-up", "duration": "5'",
+      "content_vi": "4-7 câu GV–HS", "content_en": "...",
+      "procedure_steps": ["Bước 1: ...", "Bước 2: ..."],
+      "teacher_activity": "...", "teacher_activity_en": "...",
+      "student_activity": "...", "student_activity_en": "...",
+      "questions": ["..."]
+    }}
+  ]
+}}
+3 sections: Khởi động; Hình thành kiến thức; Trải nghiệm chính.
+Đúng lớp {grade}, môn {subject}, chủ đề "{topic}". JSON đầy đủ.
+"""
+    part2_prompt = f"""
+{brief}
+Soạn NỬA SAU giáo án song ngữ JSON (không cắt):
+{{
+  "sections": [
+    {{
+      "heading_vi": "Luyện tập/vận dụng", "heading_en": "Practice", "duration": "8'",
+      "content_vi": "4-7 câu", "content_en": "...",
+      "procedure_steps": ["Bước 1: ..."],
+      "teacher_activity": "...", "teacher_activity_en": "...",
+      "student_activity": "...", "student_activity_en": "..."
     }}
   ],
-  "vocabulary": [
-    {{"term": "English term", "meaning_vi": "...", "example": "câu ví dụ gắn chủ đề"}}
-  ],
-  "assessment": {{
-    "methods": ["..."],
-    "criteria": ["tiêu chí quan sát được"],
-    "rubric": ["Đạt: ...", "Cần hỗ trợ: ..."]
-  }},
-  "homework": ["nhiệm vụ cụ thể, có hạn và sản phẩm"],
-  "differentiation": "cách hỗ trợ HS yếu / nâng cao HS khá, 4-6 câu",
-  "notes": "tổ chức sân/lớp, an toàn, dùng màu chủ đạo khi trang trí"
+  "vocabulary": [{{"term": "...", "meaning_vi": "...", "example": "..."}}],
+  "assessment": {{"methods": ["..."], "criteria": ["..."], "rubric": ["Đạt: ..."]}},
+  "homework": ["nhiệm vụ cụ thể"],
+  "differentiation": "2-4 câu hỗ trợ HS yếu / khá",
+  "notes": "tổ chức lớp, an toàn"
 }}
-
-YÊU CẦU BẮT BUỘC:
-- {lang_rule}
-- Đúng lớp {grade}, môn {subject}, ĐÚNG chủ đề "{topic}". Mọi ví dụ phải lấy từ mô tả/yêu cầu thêm (nếu có).
-- 6-7 sections: Khởi động; Hình thành kiến thức; Trải nghiệm chính; Luyện tập/vận dụng; Trình bày sản phẩm; Phản ánh – đánh giá (có thể thêm Kết nối thực tiễn).
-- Mỗi content_vi tối thiểu ~80 từ, có đối thoại GV–HS, không gạch đầu dòng chung chung.
-- procedure_steps 3-5 bước/phần. vocabulary 8-12 từ. materials 6-10 mục.
-- Nếu yêu cầu thêm nhắc hoạt động nhóm / thời gian / từ vựng / trang trí: phải thể hiện rõ trong sections/materials/notes.
-Chỉ trả JSON hợp lệ.
+3 sections: Luyện tập/vận dụng; Trình bày sản phẩm; Phản ánh – đánh giá.
+vocabulary 6 từ. Đúng chủ đề "{topic}". JSON đầy đủ.
+"""
+    compact_whole = f"""
+{brief}
+JSON giáo án song ngữ NGẮN NHƯNG ĐỦ (không cắt):
+{{
+  "title_vi":"...","title_en":"...",
+  "objectives_vi":["..."],"objectives_en":["..."],
+  "core_content_vi":"...","core_content_en":"...",
+  "sections":[
+    {{"heading_vi":"Khởi động","heading_en":"Warm-up","duration":"5'","content_vi":"...","content_en":"...","teacher_activity":"...","student_activity":"..."}},
+    {{"heading_vi":"Hình thành kiến thức","heading_en":"Knowledge","duration":"10'","content_vi":"...","content_en":"...","teacher_activity":"...","student_activity":"..."}},
+    {{"heading_vi":"Trải nghiệm chính","heading_en":"Experience","duration":"15'","content_vi":"...","content_en":"...","teacher_activity":"...","student_activity":"..."}},
+    {{"heading_vi":"Phản ánh – đánh giá","heading_en":"Reflection","duration":"10'","content_vi":"...","content_en":"...","teacher_activity":"...","student_activity":"..."}}
+  ],
+  "vocabulary":[{{"term":"...","meaning_vi":"...","example":"..."}}],
+  "homework":["..."]
+}}
+4 sections, bilingual, topic "{topic}".
 """
     try:
-        text, source = _call_ai(
-            prompt, SYSTEM_TEACHER, max_tokens=6144, json_mode=True, timeout=70,
+        part1, src1 = _ask_studio_json(
+            part1_prompt, SYSTEM_LESSON, max_tokens=4096, timeout=40,
+            compact_prompt=compact_whole,
         )
-        data = _parse_json(text) if text else None
-        if not data or not (data.get("sections") or data.get("objectives_vi")):
-            fb = _fallback_lesson(grade, subject, topic, language, description)
-            fb["note"] = "AI chưa trả giáo án đầy đủ. Đã dùng bản khung — hãy tạo lại."
-            return fb
-        data.setdefault("grade", grade)
-        data.setdefault("subject", subject)
-        data.setdefault("topic", topic)
-        data.setdefault("description", description)
-        data.setdefault("duration_minutes", 45)
-        data["source"] = source or "ai"
-        data["language"] = language
-        data["theme_color"] = theme_color
-        data["theme_accent"] = theme_accent
-        data.pop("note", None)
-        return data
+        part2, src2 = _ask_studio_json(
+            part2_prompt, SYSTEM_LESSON, max_tokens=3072, timeout=35,
+        )
+        data = _merge_ai_json(part1, part2)
+        source = src1 or src2
+
+        if _section_n(data) < 4:
+            have = json.dumps({
+                "title_vi": data.get("title_vi"),
+                "headings": [
+                    s.get("heading_vi") for s in (data.get("sections") or []) if isinstance(s, dict)
+                ],
+            }, ensure_ascii=False)[:1200]
+            more, src3 = _ask_studio_json(
+                f"""{brief}
+JSON giáo án trước còn thiếu sections. Đã có: {have}
+Trả JSON phần CÒN THIẾU, đủ tổng 6 phần:
+{{"sections":[{{"heading_vi":"...","heading_en":"...","duration":"8'","content_vi":"4-6 câu","content_en":"...","teacher_activity":"...","student_activity":"..."}}],
+ "vocabulary":[{{"term":"...","meaning_vi":"...","example":"..."}}]}}
+Các heading còn thiếu: Hình thành kiến thức; Trải nghiệm chính; Luyện tập/vận dụng; Trình bày sản phẩm; Phản ánh – đánh giá.
+Chủ đề "{topic}". JSON đầy đủ, không cắt.
+""",
+                SYSTEM_LESSON, max_tokens=3072, timeout=35,
+                compact_prompt=compact_whole,
+            )
+            if more:
+                data = _merge_ai_json(data, more)
+                source = source or src3
+
+        if _section_n(data) < 4 and not (data.get("title_vi") or data.get("objectives_vi")):
+            compact, src4 = _ask_studio_json(
+                compact_whole, SYSTEM_LESSON, max_tokens=3072, timeout=35,
+            )
+            if compact:
+                data = _merge_ai_json(data, compact)
+                source = source or src4
+
+        return _finish(data if (data.get("title_vi") or _section_n(data) or data.get("objectives_vi")) else None, source)
     except Exception:
         current_app.logger.exception("generate_lesson_draft failed")
-        fb = _fallback_lesson(grade, subject, topic, language, description)
-        fb["note"] = "AI gặp lỗi khi soạn giáo án. Đã dùng bản khung — hãy tạo lại."
-        return fb
+        try:
+            compact, src = _ask_studio_json(compact_whole, SYSTEM_LESSON, max_tokens=2048, timeout=30)
+            return _finish(compact, src)
+        except Exception:
+            current_app.logger.exception("generate_lesson_draft compact failed")
+            return _finish(None, None)
 
 
 def _quiz_ai_fail_message() -> str:
@@ -1012,18 +1161,47 @@ Return JSON only.
         return fb
 
     try:
-        text, source = _call_ai(
-            prompt, system, max_tokens=4096, json_mode=True, timeout=60,
+        compact_quiz = (
+            prompt
+            + f"\nRETRY compact: return JSON with exactly {num_questions} complete questions. Short stems. Do not truncate."
         )
-        data = _parse_json(text) if text else None
-        if not data or not data.get("questions"):
-            return _bank_quiz()
-        data["questions"] = _scrub_quiz_questions(
-            normalize_quiz_questions(data.get("questions")),
-            grade, subject, topic, num_questions,
+        data, source = _ask_studio_json(
+            prompt, system, max_tokens=4096, timeout=45, compact_prompt=compact_quiz,
         )
-        if len(data["questions"]) < max(3, min(num_questions, 4)):
-            return _bank_quiz()
+        if data and data.get("questions"):
+            data["questions"] = _scrub_quiz_questions(
+                normalize_quiz_questions(data.get("questions")),
+                grade, subject, topic, num_questions,
+            )
+        else:
+            data = {"questions": []}
+        need = num_questions - len(data.get("questions") or [])
+        if need > 0:
+            more, src2 = _ask_studio_json(
+                f"""{brief}
+Write {need} MORE English exam questions on "{topic}" (do not repeat previous items).
+JSON: {{"questions":[{{"question_text":"...","question_type":"multiple_choice","options":["A. ...","B. ...","C. ...","D. ..."],"correct_answer":"A. ...","explanation":"...","points":1}}]}}
+Types: {types_text}. {_quiz_subject_rules(grade, subject, topic)}
+""",
+                system, max_tokens=2048, timeout=30,
+            )
+            if more and more.get("questions"):
+                extra = _scrub_quiz_questions(
+                    normalize_quiz_questions(more.get("questions")),
+                    grade, subject, topic, need,
+                )
+                data["questions"] = (data.get("questions") or []) + extra
+                source = source or src2
+        if len(data.get("questions") or []) < max(3, min(num_questions, 4)):
+            bank = _bank_quiz()
+            have = data.get("questions") or []
+            if have:
+                bank["questions"] = have + [q for q in bank["questions"] if q not in have]
+                bank["questions"] = bank["questions"][:num_questions]
+                bank["source"] = source or "gemini"
+                bank.pop("note", None)
+                return bank
+            return bank
         data["source"] = source or "ai"
         data.setdefault("grade", grade)
         data.setdefault("subject", subject)
@@ -1239,10 +1417,19 @@ def generate_pptx_draft(
         "Return valid JSON only."
     )
 
-    def _ask(prompt_text: str):
-        return _call_ai(
-            prompt_text, system_en, max_tokens=4096, json_mode=True, timeout=70,
-        )
+    def _pack(deck: dict, source: str | None, slides: list) -> dict:
+        deck["slides"] = slides
+        deck["source"] = source or "ai"
+        deck["language"] = language
+        deck["theme_color"] = theme_color
+        deck["theme_accent"] = theme_accent
+        deck["description"] = description
+        deck["based_on_lesson"] = bool(lesson_context)
+        deck.setdefault("grade", grade)
+        deck.setdefault("subject", subject)
+        deck.setdefault("topic", topic)
+        deck.pop("note", None)
+        return deck
 
     prompt = f"""
 {brief_txt}
@@ -1292,46 +1479,63 @@ Rules:
 - Màu chủ đạo: {theme_color} / {theme_accent}.
 {context_hint}
 """
+    compact_pptx = (
+        f"{brief_txt}\nJSON PowerPoint, exactly {slide_count} slides, short bullets, complete JSON, no truncate.\n"
+        '{"title":"...","slides":[{"layout":"title","title":"...","bullets":["..."],"notes":"..."}]}\n'
+        "Slide 1 title, last closing. English on slide, Vietnamese notes."
+    )
     try:
-        text, source = _ask(prompt)
-        data = _parse_json(text) if text else None
+        data, source = _ask_studio_json(
+            prompt, system_en, max_tokens=4096, timeout=45, compact_prompt=compact_pptx,
+        )
         slides = (data or {}).get("slides") if data else None
-        if not data or not isinstance(slides, list) or len(slides) < 4:
-            fb = _fallback_slides(grade, subject, topic, slide_count, language)
-            fb["theme_color"] = theme_color
-            fb["theme_accent"] = theme_accent
-            fb["description"] = description
-            fb["based_on_lesson"] = bool(lesson_context)
-            return fb
-
+        if not isinstance(slides, list):
+            slides = []
+        need = slide_count - len(slides)
+        if need > 0:
+            titles = [str(s.get("title") or "") for s in slides if isinstance(s, dict)]
+            more, src2 = _ask_studio_json(
+                f"""{brief_txt}
+Add {need} MORE slides after these titles: {titles}. JSON: {{"slides":[...]}}.
+English on-slide text, Vietnamese notes. Topic "{topic}".
+""",
+                system_en, max_tokens=2048, timeout=30,
+            )
+            if more and isinstance(more.get("slides"), list):
+                slides = slides + more["slides"]
+                source = source or src2
+                data = data or {"title": topic}
         normalized = _normalize_pptx_slides(slides, topic, language)
         normalized = _enrich_image_keywords(normalized, topic)
         if len(normalized) < 4:
             fb = _fallback_slides(grade, subject, topic, slide_count, language)
+            if data and (data.get("title") or slides):
+                fb["source"] = source or "gemini"
+                fb.pop("note", None)
             fb["theme_color"] = theme_color
             fb["theme_accent"] = theme_accent
             fb["description"] = description
             fb["based_on_lesson"] = bool(lesson_context)
             return fb
-        data["slides"] = normalized
-        data["source"] = source or "ai"
-        data["language"] = language
-        data["theme_color"] = theme_color
-        data["theme_accent"] = theme_accent
-        data["description"] = description
-        data["based_on_lesson"] = bool(lesson_context)
-        data.setdefault("grade", grade)
-        data.setdefault("subject", subject)
-        data.setdefault("topic", topic)
-        data.pop("note", None)
-        return data
+        return _pack(data or {}, source, normalized)
     except Exception:
         current_app.logger.exception("generate_pptx_draft failed")
+        try:
+            compact, src = _ask_studio_json(compact_pptx, system_en, max_tokens=2048, timeout=30)
+            slides = (compact or {}).get("slides") if compact else []
+            normalized = _enrich_image_keywords(
+                _normalize_pptx_slides(slides or [], topic, language), topic,
+            )
+            if len(normalized) >= 4:
+                return _pack(compact or {}, src, normalized)
+        except Exception:
+            current_app.logger.exception("generate_pptx_draft compact failed")
         fb = _fallback_slides(grade, subject, topic, slide_count, language)
         fb["theme_color"] = theme_color
         fb["theme_accent"] = theme_accent
         fb["description"] = description
         fb["based_on_lesson"] = bool(lesson_context)
+        fb.pop("note", None)
         return fb
 
 
@@ -1627,10 +1831,10 @@ def generate_eight_step_draft(
         system = SYSTEM_EIGHT_STEP + " " + SYSTEM_MATH_EXAM
 
     def _ask(prompt_text: str) -> dict | None:
-        text, _source = _call_ai(
-            prompt_text, system, max_tokens=3072, json_mode=True, timeout=40,
+        data, _src = _ask_studio_json(
+            prompt_text, system, max_tokens=3072, timeout=35,
         )
-        return _parse_json(text) if text else None
+        return data
 
     try:
         part1 = _ask(f"""
@@ -1690,14 +1894,26 @@ FORBIDDEN: “Khái niệm nào liên quan đến {topic}?”, “Which sentence
             out["source"] = "gemini"
             out.pop("note", None)
         else:
-            out["source"] = "template"
-            out["note"] = "AI chưa trả đủ JSON. Đã dùng bản khung — hãy tạo lại."
+            retry, _src = _ask_studio_json(
+                f"""{brief}
+Compact 8-step JSON: title, warm_up 3 MCQs, 4 vocabulary, short reading + 2 questions, matching 4 pairs, 4 quiz items.
+Topic "{topic}". Complete JSON, do not truncate.
+""",
+                system, max_tokens=2048, timeout=30,
+            )
+            out = _normalize_eight_step(retry or {}, grade, subject, topic, description)
+            if retry:
+                out["source"] = "gemini"
+                out.pop("note", None)
+            else:
+                out["source"] = "template"
+                out.pop("note", None)
         return out
     except Exception:
         current_app.logger.exception("generate_eight_step_draft failed")
         out = _normalize_eight_step({}, grade, subject, topic, description)
         out["source"] = "template"
-        out["note"] = "AI gặp lỗi khi soạn bài học. Đã dùng bản khung — hãy tạo lại."
+        out.pop("note", None)
         return out
 
 
