@@ -914,7 +914,7 @@ def generate_quiz_draft(
     grade: str,
     subject: str,
     topic: str,
-    num_questions: int = 8,
+    num_questions: int = 10,
     difficulty: str = "mixed",
     language: str = "vi",
     description: str = "",
@@ -925,7 +925,7 @@ def generate_quiz_draft(
     theme_accent: str = "#F39C4A",
 ) -> dict:
     language = "en"
-    num_questions = max(3, min(int(num_questions or 8), 20))
+    num_questions = max(3, min(int(num_questions or 10), 20))
     types = quiz_types or ["multiple_choice"]
     types_text = ", ".join(types)
     brief = _teacher_brief(
@@ -1172,7 +1172,7 @@ def generate_pptx_draft(
     grade: str,
     subject: str,
     topic: str,
-    slide_count: int = 12,
+    slide_count: int = 10,
     lesson_context: dict | None = None,
     language: str = "vi",
     description: str = "",
@@ -1181,7 +1181,7 @@ def generate_pptx_draft(
     theme_accent: str = "#F39C4A",
 ) -> dict:
     language = "en"
-    slide_count = max(6, min(int(slide_count or 12), 16))
+    slide_count = max(6, min(int(slide_count or 10), 16))
     context_hint = ""
     follow_lesson = ""
     if lesson_context:
