@@ -394,14 +394,7 @@ def save_eight_step():
         })
 
     quiz_block = eight.get("quiz") or {}
-    topic = (data.get("topic") or title)
-    questions = studio_service.scrub_quiz_questions(
-        normalize_quiz_questions(quiz_block.get("questions") or []),
-        data.get("grade") or "",
-        data.get("subject") or "",
-        topic,
-        max(6, len(quiz_block.get("questions") or [])),
-    )
+    questions = normalize_quiz_questions(quiz_block.get("questions") or [])
     quiz_id = None
     if questions:
         quiz_data, err = _replace_lesson_quiz(
@@ -416,6 +409,7 @@ def save_eight_step():
                 "questions": questions,
                 "source": eight.get("source") or "ai",
                 "language": "en",
+                "randomize": False,
             },
             role=role,
         )
@@ -542,35 +536,16 @@ def attach_ai_quiz():
     if not lesson:
         return jsonify({"message": "Không tìm thấy bài học"}), 404
 
-    quiz_draft = data.get("quiz")
-    if not quiz_draft:
-        topic = (data.get("topic") or lesson.get("title") or "Bài kiểm tra").strip()
-        try:
-            quiz_draft = studio_service.generate_quiz_draft(
-                grade=(data.get("grade") or "Lớp 10").strip(),
-                subject=(data.get("subject") or "Hoạt động trải nghiệm").strip(),
-                topic=topic,
-                num_questions=int(data.get("num_questions") or 10),
-                difficulty=data.get("difficulty") or "mixed",
-                language="en",
-                description=(data.get("description") or "").strip(),
-                extra_requirements=data.get("extra_requirements") or "",
-                quiz_types=_quiz_types(data),
-                quiz_requirements=(data.get("quiz_requirements") or "").strip(),
-            )
-        except studio_service.StudioGenerateError as exc:
-            return jsonify({"message": str(exc)}), 502
+    quiz_draft = data.get("quiz") if isinstance(data.get("quiz"), dict) else None
+    if not quiz_draft or not (quiz_draft.get("questions") or []):
+        return jsonify({"message": "Hãy tạo đề AI trước, rồi gắn đúng đề đó vào bài học"}), 400
 
     from app.routes.quizzes import _replace_lesson_quiz, normalize_quiz_questions
 
     topic = (data.get("topic") or lesson.get("title") or quiz_draft.get("topic") or "").strip()
-    questions = studio_service.scrub_quiz_questions(
-        normalize_quiz_questions(quiz_draft.get("questions") or []),
-        (data.get("grade") or "").strip(),
-        (data.get("subject") or "").strip(),
-        topic,
-        max(4, len(quiz_draft.get("questions") or [])),
-    )
+    questions = normalize_quiz_questions(quiz_draft.get("questions") or [])
+    if not questions:
+        return jsonify({"message": "Đề AI chưa có câu hỏi hợp lệ"}), 400
     payload = {
         "title": quiz_draft.get("title") or f"Kiểm tra: {lesson.get('title', '')}",
         "class_id": str(lesson.get("class_id")) if lesson.get("class_id") else None,
@@ -580,17 +555,18 @@ def attach_ai_quiz():
         "source": quiz_draft.get("source") or "ai",
         "language": "en",
         "max_attempts": data.get("max_attempts", 3),
-        "randomize": data.get("randomize", True),
+        "randomize": False,
     }
     quiz_data, err = _replace_lesson_quiz(db, lesson_id, teacher_id, payload, role=role)
     if err:
         return jsonify({"message": err[0]}), err[1]
 
     quiz_id = quiz_data.get("id")
+    stored_qs = quiz_data.get("questions") or questions
     return jsonify({
         "message": "Đã gắn đề AI vào bước Kiểm tra của bài học",
         "quiz": quiz_data,
-        "draft": quiz_draft,
+        "draft": {**quiz_draft, "questions": stored_qs, "id": quiz_id},
         "student_path": f"/quiz/{quiz_id}" if quiz_id else None,
         "grade_path": f"/teacher/quizzes/{quiz_id}" if quiz_id else None,
     }), 201
@@ -602,39 +578,15 @@ def attach_ai_quiz():
 def publish_quiz():
     """Xuất đề Studio thành đề học sinh làm được (có link gửi / xem / chấm)."""
     payload = _base_payload()
-    quiz_draft = payload.get("quiz")
-    if not quiz_draft:
-        if not payload["topic"]:
-            return jsonify({"message": "Thiếu đề hoặc chủ đề"}), 400
-        try:
-            quiz_draft = studio_service.generate_quiz_draft(
-                grade=payload["grade"],
-                subject=payload["subject"],
-                topic=payload["topic"],
-                num_questions=payload["num_questions"],
-                difficulty=payload["difficulty"],
-                language=payload["language"],
-                description=payload["description"],
-                extra_requirements=payload["extra_requirements"],
-                quiz_types=payload["quiz_types"],
-                quiz_requirements=payload["quiz_requirements"],
-                theme_color=payload["theme_color"],
-                theme_accent=payload["theme_accent"],
-            )
-        except studio_service.StudioGenerateError as exc:
-            return jsonify({"message": str(exc)}), 502
+    quiz_draft = payload.get("quiz") if isinstance(payload.get("quiz"), dict) else None
+    if not quiz_draft or not (quiz_draft.get("questions") or []):
+        return jsonify({"message": "Hãy tạo đề AI trước, rồi bấm Tạo link gửi học sinh"}), 400
 
-    from app.routes.quizzes import normalize_quiz_questions
+    from app.routes.quizzes import insert_quiz_questions, load_quiz_questions, normalize_quiz_questions
 
-    questions = studio_service.scrub_quiz_questions(
-        normalize_quiz_questions(quiz_draft.get("questions") or []),
-        payload["grade"],
-        payload["subject"],
-        payload["topic"] or quiz_draft.get("topic") or "",
-        max(4, len(quiz_draft.get("questions") or [])),
-    )
+    questions = normalize_quiz_questions(quiz_draft.get("questions") or [])
     if not questions:
-        return jsonify({"message": "Đề chưa có câu hỏi hợp lệ"}), 400
+        return jsonify({"message": "Đề AI chưa có câu hỏi hợp lệ"}), 400
 
     db = get_db()
     teacher_id = to_object_id(get_jwt_identity())
@@ -644,7 +596,7 @@ def publish_quiz():
         "class_id": None,
         "teacher_id": teacher_id,
         "time_limit_minutes": int(quiz_draft.get("time_limit_minutes") or 20),
-        "randomize": True,
+        "randomize": False,
         "max_attempts": 3,
         "passing_score": int(quiz_draft.get("passing_score") or 60),
         "hide_answers": True,
@@ -663,21 +615,13 @@ def publish_quiz():
     }
     result = db.quizzes.insert_one(quiz)
     quiz_id = result.inserted_id
-    for q in questions:
-        db.questions.insert_one({
-            "quiz_id": quiz_id,
-            "question_text": q.get("question_text", ""),
-            "question_type": q.get("question_type", "multiple_choice"),
-            "options": q.get("options", []),
-            "correct_answer": q.get("correct_answer"),
-            "points": int(q.get("points", 1)),
-            "explanation": q.get("explanation", ""),
-            "sample_answer": q.get("sample_answer") or "",
-        })
+    insert_quiz_questions(db, quiz_id, questions)
+    stored = serialize_doc(load_quiz_questions(db, quiz_id))
 
     quiz["_id"] = quiz_id
     quiz_data = serialize_doc(quiz)
-    quiz_data["questions_count"] = len(questions)
+    quiz_data["questions"] = stored
+    quiz_data["questions_count"] = len(stored)
     qid = str(quiz_id)
     return jsonify({
         "message": "Đã tạo đề cho học sinh. Gửi link — học sinh chỉ nhập tên và lớp, không cần đăng nhập.",

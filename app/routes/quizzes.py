@@ -71,17 +71,49 @@ def grade_answer(question, answer):
     return False
 
 
+def _stem(q: dict) -> str:
+    return str(
+        (q or {}).get("question_text")
+        or (q or {}).get("question")
+        or (q or {}).get("prompt")
+        or ""
+    ).strip()
+
+
+def load_quiz_questions(db, quiz_id):
+    return list(db.questions.find({"quiz_id": quiz_id}).sort([("order", 1), ("_id", 1)]))
+
+
+def insert_quiz_questions(db, quiz_id, questions):
+    docs = []
+    for i, q in enumerate(normalize_quiz_questions(questions)):
+        docs.append({
+            "quiz_id": quiz_id,
+            "order": i,
+            "question_text": q.get("question_text", ""),
+            "question_type": q.get("question_type", "multiple_choice"),
+            "options": q.get("options", []),
+            "correct_answer": q.get("correct_answer"),
+            "points": int(q.get("points", 1) or 1),
+            "explanation": q.get("explanation", ""),
+            "sample_answer": q.get("sample_answer") or "",
+        })
+    if docs:
+        db.questions.insert_many(docs)
+    return docs
+
+
 def normalize_quiz_questions(questions):
     """Chuẩn hoá options + correct_answer để đáp án khớp một option."""
     normalized = []
     for q in questions or []:
         if not isinstance(q, dict):
             continue
-        q_type = q.get("question_type") or "multiple_choice"
+        q_type = q.get("question_type") or q.get("type") or "multiple_choice"
         if q_type in ("short_answer", "open", "tu_luan"):
             q_type = "essay"
         if q_type == "essay":
-            text = str(q.get("question_text") or "").strip()
+            text = _stem(q)
             if not text:
                 continue
             normalized.append({
@@ -133,8 +165,11 @@ def normalize_quiz_questions(questions):
             correct = matched
         if not correct and opts:
             correct = opts[0]
+        text = _stem(q)
+        if not text:
+            continue
         normalized.append({
-            "question_text": str(q.get("question_text") or "").strip(),
+            "question_text": text,
             "question_type": q_type or "multiple_choice",
             "options": opts or (["A. Option 1", "B. Option 2", "C. Option 3", "D. Option 4"] if q_type == "multiple_choice" else []),
             "correct_answer": correct,
@@ -252,7 +287,7 @@ def get_quiz(quiz_id):
     if not quiz:
         return jsonify({"message": "Không tìm thấy bài kiểm tra"}), 404
 
-    questions = list(db.questions.find({"quiz_id": quiz["_id"]}))
+    questions = load_quiz_questions(db, quiz["_id"])
     role = get_jwt().get("role", "student")
     # Giáo viên/admin xem đáp án để sửa; học sinh làm bài thì ẩn
     reveal_answers = role in ("teacher", "super_admin") or request.args.get("include_answers") == "1"
@@ -293,17 +328,7 @@ def create_quiz():
     result = db.quizzes.insert_one(quiz)
     quiz_id = result.inserted_id
 
-    for q in normalize_quiz_questions(data.get("questions", [])):
-        db.questions.insert_one({
-            "quiz_id": quiz_id,
-            "question_text": q.get("question_text", ""),
-            "question_type": q.get("question_type", "multiple_choice"),
-            "options": q.get("options", []),
-            "correct_answer": q.get("correct_answer"),
-            "points": int(q.get("points", 1)),
-            "explanation": q.get("explanation", ""),
-            "sample_answer": q.get("sample_answer") or "",
-        })
+    insert_quiz_questions(db, quiz_id, data.get("questions", []))
 
     quiz["_id"] = quiz_id
     return jsonify(serialize_doc(quiz)), 201
@@ -355,21 +380,11 @@ def _replace_lesson_quiz(db, lesson_id, teacher_id, data, role: str = "teacher")
     result = db.quizzes.insert_one(quiz)
     quiz_id = result.inserted_id
 
-    for q in questions:
-        db.questions.insert_one({
-            "quiz_id": quiz_id,
-            "question_text": q.get("question_text", ""),
-            "question_type": q.get("question_type", "multiple_choice"),
-            "options": q.get("options", []),
-            "correct_answer": q.get("correct_answer"),
-            "points": int(q.get("points", 1)),
-            "explanation": q.get("explanation", ""),
-            "sample_answer": q.get("sample_answer") or "",
-        })
+    insert_quiz_questions(db, quiz_id, questions)
 
     quiz["_id"] = quiz_id
     quiz_data = serialize_doc(quiz)
-    quiz_data["questions"] = serialize_doc(list(db.questions.find({"quiz_id": quiz_id})))
+    quiz_data["questions"] = serialize_doc(load_quiz_questions(db, quiz_id))
     quiz_data["questions_count"] = len(questions)
     return quiz_data, None
 
@@ -402,7 +417,7 @@ def get_quiz_public(quiz_id):
     quiz = db.quizzes.find_one({"_id": to_object_id(quiz_id)})
     if not quiz:
         return jsonify({"message": "Không tìm thấy bài kiểm tra"}), 404
-    questions = list(db.questions.find({"quiz_id": quiz["_id"]}))
+    questions = load_quiz_questions(db, quiz["_id"])
     return jsonify(_public_quiz_payload(quiz, questions))
 
 
@@ -428,7 +443,7 @@ def guest_submit_quiz(quiz_id):
     if attempt_count >= quiz.get("max_attempts", 3):
         return jsonify({"message": "Đã hết lượt làm bài"}), 400
 
-    questions = list(db.questions.find({"quiz_id": quiz["_id"]}))
+    questions = load_quiz_questions(db, quiz["_id"])
     graded = _score_submission(questions, data.get("answers", {}), quiz.get("passing_score", 60))
     attempt = {
         "student_id": None,
@@ -477,7 +492,7 @@ def submit_quiz(quiz_id):
     if attempt_count >= quiz.get("max_attempts", 3):
         return jsonify({"message": "Đã hết lượt làm bài"}), 400
 
-    questions = list(db.questions.find({"quiz_id": quiz["_id"]}))
+    questions = load_quiz_questions(db, quiz["_id"])
     graded = _score_submission(questions, data.get("answers", {}), quiz.get("passing_score", 60))
     attempt = {
         "student_id": user_id,
