@@ -341,6 +341,8 @@ def json_loads_safe(text: str):
 
 
 _IMAGE_CACHE: dict[str, bytes] = {}
+_AI_IMAGE_ATTEMPTS = 0
+_AI_IMAGE_LIMIT = 4
 
 
 def _image_cache_key(*parts) -> str:
@@ -383,19 +385,22 @@ def _related_image_bytes(
     if cached:
         return cached
 
-    try:
-        from app.services.ai_service import generate_slide_image
+    global _AI_IMAGE_ATTEMPTS
+    if _AI_IMAGE_ATTEMPTS < _AI_IMAGE_LIMIT:
+        _AI_IMAGE_ATTEMPTS += 1
+        try:
+            from app.services.ai_service import generate_slide_image
 
-        generated = generate_slide_image(
-            _gemini_image_prompt(keyword, topic, title, bullets, scene),
-            aspect_ratio="4:3",
-            timeout=45,
-        )
-        if generated and len(generated) > 2000:
-            _IMAGE_CACHE[cache_key] = generated
-            return generated
-    except Exception:
-        pass
+            generated = generate_slide_image(
+                _gemini_image_prompt(keyword, topic, title, bullets, scene),
+                aspect_ratio="4:3",
+                timeout=22,
+            )
+            if generated and len(generated) > 2000:
+                _IMAGE_CACHE[cache_key] = generated
+                return generated
+        except Exception:
+            pass
 
     query = _search_query(keyword, topic, title)
     theme = _theme_key(f"{query} {topic} {title} {scene}")
@@ -882,6 +887,8 @@ def _prefetch_slide_images(slides: list, topic: str) -> None:
             continue
         seen.add(item)
         jobs.append(item)
+        if len(jobs) >= _AI_IMAGE_LIMIT:
+            break
     if not jobs:
         return
 
@@ -919,6 +926,8 @@ def build_rich_pptx_bytes(deck: dict) -> bytes:
     if not slides:
         slides = [{"layout": "title", "title": meta["topic"], "subtitle": meta["subject"], "bullets": []}]
 
+    global _AI_IMAGE_ATTEMPTS
+    _AI_IMAGE_ATTEMPTS = 0
     _prefetch_slide_images(slides, meta["topic"])
     total = len(slides)
     for idx, raw in enumerate(slides):

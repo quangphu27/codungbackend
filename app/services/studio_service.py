@@ -39,6 +39,13 @@ SYSTEM_TEACHER = (
     "Trả về đúng JSON, không markdown."
 )
 
+SYSTEM_EIGHT_STEP = (
+    "You create 8-step experiential English lessons for Vietnamese secondary students. "
+    "Student-facing text in English. meaning_vi and reading translation in Vietnamese. "
+    "Keep wording concise so JSON is complete (never truncated). Valid JSON only. "
+    "Stay on the teacher's topic, grade and subject."
+)
+
 
 def _subject_blob(subject: str, topic: str) -> str:
     return f"{subject or ''} {topic or ''}".lower()
@@ -620,7 +627,7 @@ def _fallback_quiz(
             "passing_score": 60,
             "time_limit_minutes": 20,
             "questions": questions,
-            "source": "template",
+            "source": "practice",
             "note": None,
         }
     questions = []
@@ -628,44 +635,44 @@ def _fallback_quiz(
         qtype = types[(i - 1) % len(types)]
         if qtype == "essay":
             questions.append({
-                "question_text": f"Question {i}: Explain the meaning of “{topic}” and give one real-life example.",
+                "question_text": f"Question {i}: Write 6–8 sentences about how students take part in “{topic}” at school. Give one example.",
                 "question_type": "essay",
                 "options": [],
-                "correct_answer": f"A clear explanation of {topic} with a real example and personal connection.",
-                "sample_answer": f"Define {topic}, explain why it matters, and give one school-life example.",
+                "correct_answer": f"Describe the activity, one example, and what students learn from {topic}.",
+                "sample_answer": f"Students join {topic}, work with classmates, and explain one real example from school.",
                 "explanation": "Score ideas, examples, and organisation.",
                 "points": 2,
             })
         elif qtype == "true_false":
             questions.append({
-                "question_text": f"Question {i}: “{topic}” is an educational experiential activity.",
+                "question_text": f"Question {i}: Students in {grade} can practise this lesson by doing the tasks of “{topic}”.",
                 "question_type": "true_false",
                 "options": ["True", "False"],
                 "correct_answer": "True",
-                "explanation": f"{topic} has educational value in experiential learning.",
+                "explanation": f"{topic} is a classroom task for {grade}.",
                 "points": 1,
             })
         elif qtype == "fill_blank":
             questions.append({
-                "question_text": f"Question {i}: Complete: Experiential activities about {topic} help students practise ______.",
+                "question_text": f"Question {i}: Complete: In the lesson “{topic}”, students should follow the ______ of the teacher.",
                 "question_type": "fill_blank",
                 "options": [],
-                "correct_answer": "life skills",
-                "explanation": "Students name a skill or quality.",
+                "correct_answer": "instructions",
+                "explanation": "Students follow classroom instructions.",
                 "points": 1,
             })
         else:
             questions.append({
-                "question_text": f"Question {i}: Give one accurate fact used when studying “{topic}” in {grade}.",
+                "question_text": f"Question {i}: What should students do in the lesson “{topic}”?",
                 "question_type": "multiple_choice",
                 "options": [
-                    f"A. Apply the main rule of {topic} to a concrete example",
-                    f"B. Skip the given data about {topic}",
-                    "C. Use a formula from a different grade level",
-                    "D. Replace the unknown with any number",
+                    f"A. Join the class task about {topic} and follow the teacher",
+                    "B. Skip the lesson and stay on the phone",
+                    "C. Leave school before it starts",
+                    "D. Copy a random answer without reading",
                 ],
-                "correct_answer": f"A. Apply the main rule of {topic} to a concrete example",
-                "explanation": f"Students must apply {topic} to a real example.",
+                "correct_answer": f"A. Join the class task about {topic} and follow the teacher",
+                "explanation": f"Students take part in {topic} as taught in class.",
                 "points": 1,
             })
     return {
@@ -677,7 +684,7 @@ def _fallback_quiz(
         "passing_score": 60,
         "time_limit_minutes": 20,
         "questions": questions,
-        "source": "template",
+        "source": "practice",
         "note": None,
     }
 
@@ -866,23 +873,31 @@ YÊU CẦU BẮT BUỘC:
 - Nếu yêu cầu thêm nhắc hoạt động nhóm / thời gian / từ vựng / trang trí: phải thể hiện rõ trong sections/materials/notes.
 Chỉ trả JSON hợp lệ.
 """
-    text, source = _call_ai(
-        prompt, SYSTEM_TEACHER, max_tokens=16384, json_mode=True, timeout=180,
-    )
-    data = _parse_json(text) if text else None
-    if not data or not (data.get("sections") or data.get("objectives_vi")):
-        return _fallback_lesson(grade, subject, topic, language, description)
-    data.setdefault("grade", grade)
-    data.setdefault("subject", subject)
-    data.setdefault("topic", topic)
-    data.setdefault("description", description)
-    data.setdefault("duration_minutes", 45)
-    data["source"] = source or "ai"
-    data["language"] = language
-    data["theme_color"] = theme_color
-    data["theme_accent"] = theme_accent
-    data.pop("note", None)
-    return data
+    try:
+        text, source = _call_ai(
+            prompt, SYSTEM_TEACHER, max_tokens=6144, json_mode=True, timeout=70,
+        )
+        data = _parse_json(text) if text else None
+        if not data or not (data.get("sections") or data.get("objectives_vi")):
+            fb = _fallback_lesson(grade, subject, topic, language, description)
+            fb["note"] = "AI chưa trả giáo án đầy đủ. Đã dùng bản khung — hãy tạo lại."
+            return fb
+        data.setdefault("grade", grade)
+        data.setdefault("subject", subject)
+        data.setdefault("topic", topic)
+        data.setdefault("description", description)
+        data.setdefault("duration_minutes", 45)
+        data["source"] = source or "ai"
+        data["language"] = language
+        data["theme_color"] = theme_color
+        data["theme_accent"] = theme_accent
+        data.pop("note", None)
+        return data
+    except Exception:
+        current_app.logger.exception("generate_lesson_draft failed")
+        fb = _fallback_lesson(grade, subject, topic, language, description)
+        fb["note"] = "AI gặp lỗi khi soạn giáo án. Đã dùng bản khung — hãy tạo lại."
+        return fb
 
 
 def _quiz_ai_fail_message() -> str:
@@ -981,30 +996,48 @@ Return JSON only.
     system = SYSTEM_MATH_EXAM if _is_math_topic(subject, topic) else (
         SYSTEM_TEACHER + " For this quiz, write a real exam. Never use placeholder/meta options."
     )
-    text, source = _call_ai(
-        prompt, system, max_tokens=8192, json_mode=True, timeout=150,
-    )
-    data = _parse_json(text) if text else None
-    if not data or not data.get("questions"):
-        raise StudioGenerateError(_quiz_ai_fail_message())
     from app.routes.quizzes import normalize_quiz_questions
-    data["questions"] = _scrub_quiz_questions(
-        normalize_quiz_questions(data.get("questions")),
-        grade, subject, topic, num_questions,
-    )
-    if len(data["questions"]) < max(3, min(num_questions, 4)):
-        raise StudioGenerateError("AI trả về câu hỏi chung chung. Hãy tạo lại đề.")
-    data["source"] = source or "ai"
-    data.setdefault("grade", grade)
-    data.setdefault("subject", subject)
-    data.setdefault("topic", topic)
-    data.setdefault("description", description)
-    data["language"] = language
-    data["quiz_types"] = types
-    data["theme_color"] = theme_color
-    data["theme_accent"] = theme_accent
-    data.pop("note", None)
-    return data
+
+    def _bank_quiz():
+        fb = _fallback_quiz(grade, subject, topic, num_questions, types, language)
+        fb["questions"] = _scrub_quiz_questions(
+            normalize_quiz_questions(fb.get("questions")),
+            grade, subject, topic, num_questions,
+        )
+        fb["source"] = "practice"
+        fb["quiz_types"] = types
+        fb["theme_color"] = theme_color
+        fb["theme_accent"] = theme_accent
+        fb.pop("note", None)
+        return fb
+
+    try:
+        text, source = _call_ai(
+            prompt, system, max_tokens=4096, json_mode=True, timeout=60,
+        )
+        data = _parse_json(text) if text else None
+        if not data or not data.get("questions"):
+            return _bank_quiz()
+        data["questions"] = _scrub_quiz_questions(
+            normalize_quiz_questions(data.get("questions")),
+            grade, subject, topic, num_questions,
+        )
+        if len(data["questions"]) < max(3, min(num_questions, 4)):
+            return _bank_quiz()
+        data["source"] = source or "ai"
+        data.setdefault("grade", grade)
+        data.setdefault("subject", subject)
+        data.setdefault("topic", topic)
+        data.setdefault("description", description)
+        data["language"] = language
+        data["quiz_types"] = types
+        data["theme_color"] = theme_color
+        data["theme_accent"] = theme_accent
+        data.pop("note", None)
+        return data
+    except Exception:
+        current_app.logger.exception("generate_quiz_draft failed")
+        return _bank_quiz()
 
 
 def _normalize_pptx_slides(slides: list, topic: str, language: str = "vi") -> list[dict]:
@@ -1208,7 +1241,7 @@ def generate_pptx_draft(
 
     def _ask(prompt_text: str):
         return _call_ai(
-            prompt_text, system_en, max_tokens=12288, json_mode=True, timeout=180,
+            prompt_text, system_en, max_tokens=4096, json_mode=True, timeout=70,
         )
 
     prompt = f"""
@@ -1259,43 +1292,47 @@ Rules:
 - Màu chủ đạo: {theme_color} / {theme_accent}.
 {context_hint}
 """
-    text, source = _ask(prompt)
-    data = _parse_json(text) if text else None
-    slides = (data or {}).get("slides") if data else None
+    try:
+        text, source = _ask(prompt)
+        data = _parse_json(text) if text else None
+        slides = (data or {}).get("slides") if data else None
+        if not data or not isinstance(slides, list) or len(slides) < 4:
+            fb = _fallback_slides(grade, subject, topic, slide_count, language)
+            fb["theme_color"] = theme_color
+            fb["theme_accent"] = theme_accent
+            fb["description"] = description
+            fb["based_on_lesson"] = bool(lesson_context)
+            return fb
 
-    if not data or not isinstance(slides, list) or len(slides) < 4:
-        retry_prompt = f"""
-Return PowerPoint JSON with {slide_count} slides for topic "{topic}".
-On-slide text English; notes Vietnamese for the teacher. {lang_rule}
-Follow the lesson plan if provided. Layouts: title, content, two_column, table, cards, closing.
-Vietnam-first image_keyword per slide matching THAT slide title. Valid JSON only.
-{brief_txt}
-{context_hint[:1500]}
-"""
-        text2, source2 = _ask(retry_prompt)
-        data2 = _parse_json(text2) if text2 else None
-        if data2 and isinstance(data2.get("slides"), list) and len(data2["slides"]) >= 4:
-            data, source, slides = data2, source2 or source, data2["slides"]
-
-    if not data or not isinstance(slides, list) or len(slides) < 4:
-        return _fallback_slides(grade, subject, topic, slide_count, language)
-
-    normalized = _normalize_pptx_slides(slides, topic, language)
-    normalized = _enrich_image_keywords(normalized, topic)
-    if len(normalized) < 4:
-        return _fallback_slides(grade, subject, topic, slide_count, language)
-    data["slides"] = normalized
-    data["source"] = source or "ai"
-    data["language"] = language
-    data["theme_color"] = theme_color
-    data["theme_accent"] = theme_accent
-    data["description"] = description
-    data["based_on_lesson"] = bool(lesson_context)
-    data.setdefault("grade", grade)
-    data.setdefault("subject", subject)
-    data.setdefault("topic", topic)
-    data.pop("note", None)
-    return data
+        normalized = _normalize_pptx_slides(slides, topic, language)
+        normalized = _enrich_image_keywords(normalized, topic)
+        if len(normalized) < 4:
+            fb = _fallback_slides(grade, subject, topic, slide_count, language)
+            fb["theme_color"] = theme_color
+            fb["theme_accent"] = theme_accent
+            fb["description"] = description
+            fb["based_on_lesson"] = bool(lesson_context)
+            return fb
+        data["slides"] = normalized
+        data["source"] = source or "ai"
+        data["language"] = language
+        data["theme_color"] = theme_color
+        data["theme_accent"] = theme_accent
+        data["description"] = description
+        data["based_on_lesson"] = bool(lesson_context)
+        data.setdefault("grade", grade)
+        data.setdefault("subject", subject)
+        data.setdefault("topic", topic)
+        data.pop("note", None)
+        return data
+    except Exception:
+        current_app.logger.exception("generate_pptx_draft failed")
+        fb = _fallback_slides(grade, subject, topic, slide_count, language)
+        fb["theme_color"] = theme_color
+        fb["theme_accent"] = theme_accent
+        fb["description"] = description
+        fb["based_on_lesson"] = bool(lesson_context)
+        return fb
 
 
 def _parse_timecode(value, default: float = 0) -> float:
@@ -1477,6 +1514,16 @@ def _fallback_eight_step(grade: str, subject: str, topic: str, description: str 
     }
 
 
+def _as_int(val, default: int) -> int:
+    try:
+        if val is None or isinstance(val, (list, dict, bool)):
+            return default
+        token = str(val).strip().split()[0].replace(",", ".")
+        return int(float(token))
+    except Exception:
+        return default
+
+
 def _normalize_eight_step(data: dict, grade: str, subject: str, topic: str, description: str = "") -> dict:
     fb = _fallback_eight_step(grade, subject, topic, description)
     if not isinstance(data, dict):
@@ -1521,7 +1568,7 @@ def _normalize_eight_step(data: dict, grade: str, subject: str, topic: str, desc
     out = {
         "title": str(data.get("title") or topic)[:160],
         "description": str(data.get("description") or description or fb["description"])[:800],
-        "duration_minutes": int(data.get("duration_minutes") or 45),
+        "duration_minutes": _as_int(data.get("duration_minutes"), 45),
         "warm_up": {"questions": _mcq_items(warm.get("questions") or fb["warm_up"]["questions"], 6)},
         "vocabulary": vocab or fb["vocabulary"],
         "reading": {
@@ -1543,8 +1590,8 @@ def _normalize_eight_step(data: dict, grade: str, subject: str, topic: str, desc
         },
         "quiz": {
             "title": str(quiz.get("title") or f"Quiz: {topic}"),
-            "time_limit_minutes": int(quiz.get("time_limit_minutes") or 20),
-            "passing_score": int(quiz.get("passing_score") or 60),
+            "time_limit_minutes": _as_int(quiz.get("time_limit_minutes"), 20),
+            "passing_score": _as_int(quiz.get("passing_score"), 60),
             "questions": quiz_qs,
         },
         "source": data.get("source") or "ai",
@@ -1569,92 +1616,89 @@ def generate_eight_step_draft(
         grade=grade, subject=subject, topic=topic, language="en",
         description=description, extra_requirements=extra_requirements,
     )
-    context = ""
-    if lesson_context:
-        context += "Lesson plan JSON (reuse ideas, do not copy layout):\n" + json.dumps({
-            "title_en": lesson_context.get("title_en"),
-            "objectives_en": (lesson_context.get("objectives_en") or [])[:5],
-            "vocabulary": (lesson_context.get("vocabulary") or [])[:8],
-            "core": (lesson_context.get("core_content_en") or lesson_context.get("core_content_vi") or "")[:500],
-        }, ensure_ascii=False)[:2500]
-    if quiz_context and quiz_context.get("questions"):
-        context += "\nExisting quiz (may reuse):\n" + json.dumps(quiz_context.get("questions")[:8], ensure_ascii=False)[:2000]
-    prompt = f"""
-{brief}
+    hint = ""
+    if isinstance(lesson_context, dict):
+        title = lesson_context.get("title_en") or lesson_context.get("title_vi") or ""
+        objs = (lesson_context.get("objectives_en") or lesson_context.get("objectives_vi") or [])[:3]
+        if title or objs:
+            hint = f"Follow this lesson: {title}. Objectives: {'; '.join(str(x) for x in objs)}.\n"
+    system = SYSTEM_EIGHT_STEP
+    if _is_math_topic(subject, topic):
+        system = SYSTEM_EIGHT_STEP + " " + SYSTEM_MATH_EXAM
 
-Create a complete 8-step Experiential Learning LESSON for the student platform.
-Student-facing text in ENGLISH. Vocabulary meanings and reading translation in Vietnamese.
-JSON only:
+    def _ask(prompt_text: str) -> dict | None:
+        text, _source = _call_ai(
+            prompt_text, system, max_tokens=3072, json_mode=True, timeout=40,
+        )
+        return _parse_json(text) if text else None
+
+    try:
+        part1 = _ask(f"""
+{brief}
+{hint}
+Create the FIRST HALF of an 8-step lesson. JSON only:
 {{
-  "title": "English lesson title",
-  "description": "2-3 English sentences",
+  "title": "English title",
+  "description": "2 short English sentences",
   "duration_minutes": 45,
-  "warm_up": {{
-    "questions": [
-      {{"question": "...", "type": "multiple_choice", "options": ["A","B","C","D"], "correct_answer": "A"}}
-    ]
-  }},
-  "vocabulary": [
-    {{"word": "English word", "ipa": "/.../", "meaning_vi": "...", "example_sentence": "...", "category": "school_life", "difficulty": "beginner"}}
-  ],
+  "warm_up": {{"questions": [{{"question":"...","options":["A","B","C","D"],"correct_answer":"A"}}]}},
+  "vocabulary": [{{"word":"...","ipa":"/.../","meaning_vi":"...","example_sentence":"..."}}],
   "reading": {{
-    "passage": "180-260 words English reading about the topic, Vietnam school context",
+    "passage": "90-130 English words, Vietnam school, this topic",
     "translation": "Vietnamese translation",
-    "questions": [
-      {{"question": "...", "type": "multiple_choice", "options": ["A","B","C","D"], "correct_answer": "A"}}
-    ]
+    "questions": [{{"question":"...","options":["A","B","C","D"],"correct_answer":"A"}}]
   }},
   "video": {{
-    "video_prompt": "what classroom video the teacher should upload",
-    "subtitles": [{{"start": "00:00:00", "end": "00:00:06", "text": "English line"}}]
-  }},
-  "interactive": {{
-    "activities": [
-      {{"type": "matching", "title": "...", "description": "...", "pairs": [{{"left": "EN", "right": "VI"}}]}}
-    ]
-  }},
-  "practice": {{"instructions": "English task for students, with a product to upload", "allow_upload": true}},
-  "reflection": {{"instructions": "English journal prompt 80-120 words"}},
+    "video_prompt": "classroom video the teacher should film",
+    "subtitles": [{{"start":"00:00:00","end":"00:00:08","text":"English line"}}]
+  }}
+}}
+Rules: warm_up 3 MCQs, vocabulary 6 words, reading 3 MCQs, 2 subtitle lines. Exact topic "{topic}".
+""")
+        quiz_hint = ""
+        if isinstance(quiz_context, dict) and quiz_context.get("questions"):
+            quiz_hint = "Write a NEW 6-item quiz on the same topic (do not copy placeholders).\n"
+        part2 = _ask(f"""
+{brief}
+{hint}{quiz_hint}
+Create the SECOND HALF of the 8-step lesson. JSON only:
+{{
+  "interactive": {{"activities": [{{"type":"matching","title":"...","description":"...","pairs":[{{"left":"EN","right":"VI"}}]}}]}},
+  "practice": {{"instructions": "English group task with a product to upload"}},
+  "reflection": {{"instructions": "English journal prompt 60-90 words"}},
   "quiz": {{
-    "title": "...",
+    "title": "Quiz: {topic}",
     "time_limit_minutes": 20,
     "passing_score": 60,
     "questions": [
-      {{"question_text": "...", "question_type": "multiple_choice", "options": ["A. ...","B. ...","C. ...","D. ..."], "correct_answer": "A. ...", "explanation": "...", "points": 1}}
+      {{"question_text":"...","question_type":"multiple_choice","options":["A. ...","B. ...","C. ...","D. ..."],"correct_answer":"A. ...","explanation":"...","points":1}}
     ]
   }}
 }}
-Rules:
-- Exactly this topic / grade / subject.
-- warm_up: 4 questions. reading: 4 questions. vocabulary: 8-10 words.
-- quiz: 6-8 questions in ENGLISH, mix multiple_choice + true_false + 1 essay. true_false options ["True","False"].
-- matching: 4-6 pairs.
+Rules: 4 matching pairs. Quiz 6 English items: 4 MCQ + 1 true_false (options True/False) + 1 essay.
 {_quiz_subject_rules(grade, subject, topic)}
-If mathematics: practice and quiz items MUST include calculations (derivatives/integrals/numbers), not only definitions.
-FORBIDDEN quiz stems/options: “Khái niệm nào liên quan đến {topic}?”, “Which sentence best describes {topic}?”,
-“Nội dung đúng về {topic} / Khái niệm không liên quan / Thông tin sai / Không có đáp án”.
-{context}
-"""
-    system = SYSTEM_TEACHER
-    if _is_math_topic(subject, topic):
-        system = (
-            SYSTEM_MATH_EXAM
-            + " Output MUST still be the 8-step lesson JSON. "
-            "Warm-up/reading may introduce the idea; the quiz MUST be calculation items "
-            "with formula or number options. Never meta-questions."
-        )
-    text, source = _call_ai(
-        prompt, system, max_tokens=12288, json_mode=True, timeout=180,
-    )
-    data = _parse_json(text) if text else None
-    out = _normalize_eight_step(data or {}, grade, subject, topic, description)
-    if not data:
+FORBIDDEN: “Khái niệm nào liên quan đến {topic}?”, “Which sentence best describes {topic}?”,
+“Nội dung đúng về / Khái niệm không liên quan / Thông tin sai / Không có đáp án”.
+""")
+        data: dict = {}
+        if part1:
+            data.update(part1)
+        if part2:
+            data.update(part2)
+        out = _normalize_eight_step(data, grade, subject, topic, description)
+        if part1 or part2:
+            out["source"] = "gemini"
+            out.pop("note", None)
+        else:
+            out["source"] = "template"
+            out["note"] = "AI chưa trả đủ JSON. Đã dùng bản khung — hãy tạo lại."
+        return out
+    except Exception:
+        current_app.logger.exception("generate_eight_step_draft failed")
+        out = _normalize_eight_step({}, grade, subject, topic, description)
         out["source"] = "template"
-        out["note"] = "Bản mẫu 8 bước. Gắn API key Gemini để AI soạn đầy đủ hơn."
-    else:
-        out["source"] = source or "ai"
-        out.pop("note", None)
-    return out
+        out["note"] = "AI gặp lỗi khi soạn bài học. Đã dùng bản khung — hãy tạo lại."
+        return out
 
 
 def build_docx_bytes(lesson: dict) -> bytes:

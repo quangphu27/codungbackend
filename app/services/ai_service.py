@@ -10,22 +10,18 @@ from flask import current_app
 # Client helpers – REST-based (không phụ thuộc SDK version)
 # ──────────────────────────────────────────────
 
-# Bản trả phí: Pro/Argon trước, Flash làm dự phòng nếu model chưa mở trên project
+# Model thật đang có trên API: Flash nhanh/ổn định trước, Pro nếu Flash lỗi.
 GEMINI_MODELS = [
-    "gemini-4-argon",
-    "gemini-3.1-pro-preview",
-    "gemini-3.1-pro",
-    "gemini-2.5-pro",
-    "gemini-3.8-flash",
     "gemini-2.5-flash",
+    "gemini-2.5-pro",
 ]
 
 GEMINI_IMAGE_MODELS = [
-    "gemini-3-pro-image",
-    "gemini-nano-banana-2.1",
-    "gemini-3.1-flash-image",
     "gemini-2.5-flash-image",
+    "gemini-3.1-flash-image",
 ]
+
+_MISSING_MODELS: set[str] = set()
 
 GEMINI_REST_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
 
@@ -37,11 +33,11 @@ def _text_models() -> list[str]:
     except Exception:
         preferred = (os.getenv("GEMINI_TEXT_MODEL") or "").strip()
     models = list(GEMINI_MODELS)
-    if preferred and preferred not in models:
-        models.insert(0, preferred)
-    elif preferred:
-        models = [preferred] + [m for m in models if m != preferred]
-    return models
+    if preferred and preferred not in _MISSING_MODELS:
+        ok = preferred in models or preferred.startswith("gemini-2.") or preferred.startswith("gemini-1.5")
+        if ok:
+            models = [preferred] + [m for m in models if m != preferred]
+    return [m for m in models if m not in _MISSING_MODELS][:2]
 
 
 def _image_models() -> list[str]:
@@ -51,11 +47,11 @@ def _image_models() -> list[str]:
     except Exception:
         preferred = (os.getenv("GEMINI_IMAGE_MODEL") or "").strip()
     models = list(GEMINI_IMAGE_MODELS)
-    if preferred and preferred not in models:
-        models.insert(0, preferred)
-    elif preferred:
-        models = [preferred] + [m for m in models if m != preferred]
-    return models
+    if preferred and preferred not in _MISSING_MODELS:
+        ok = preferred in models or "image" in preferred
+        if ok:
+            models = [preferred] + [m for m in models if m != preferred]
+    return [m for m in models if m not in _MISSING_MODELS][:2]
 
 
 def _call_gemini(
@@ -68,6 +64,9 @@ def _call_gemini(
 ) -> str:
     """Gọi Gemini qua REST HTTP – không dùng SDK để tránh lỗi thư viện."""
     import json
+    import time
+    import urllib.error
+    import urllib.request
     from app.services.secret_store import get_gemini_api_key
     api_key = get_gemini_api_key()
     if not api_key:
@@ -75,86 +74,92 @@ def _call_gemini(
 
     contents = []
     if system:
-        contents.append({"role": "user",  "parts": [{"text": system}]})
+        contents.append({"role": "user",  "parts": [{"text": system[:4000]}]})
         contents.append({"role": "model", "parts": [{"text": "Understood. I will follow the instructions."}]})
-    contents.append({"role": "user", "parts": [{"text": prompt}]})
+    contents.append({"role": "user", "parts": [{"text": (prompt or "")[:24000]}]})
 
     generation_config = {
-        "temperature": 0.25 if json_mode else 0.7,
-        "maxOutputTokens": max(256, int(max_output_tokens or 2048)),
+        "temperature": 0.3 if json_mode else 0.7,
+        "maxOutputTokens": max(256, min(int(max_output_tokens or 2048), 8192)),
     }
     if json_mode:
         generation_config["responseMimeType"] = "application/json"
 
     body = {"contents": contents, "generationConfig": generation_config}
     payload = json.dumps(body).encode()
+    deadline = time.monotonic() + max(15, min(int(timeout or 30), 90))
+
+    def _read_text(data: dict) -> str:
+        candidates = data.get("candidates") or []
+        if not candidates:
+            return ""
+        parts = (candidates[0].get("content") or {}).get("parts") or []
+        text = "".join(p.get("text", "") for p in parts if p.get("text") and not p.get("thought"))
+        if not text:
+            text = "".join(p.get("text", "") for p in parts if p.get("text"))
+        return text
 
     for model_name in _text_models():
+        remaining = deadline - time.monotonic()
+        if remaining < 8:
+            current_app.logger.warning("Gemini overall timeout, stop trying more models")
+            break
         url = GEMINI_REST_URL.format(model=model_name, key=api_key)
         try:
-            import urllib.request
             req = urllib.request.Request(
                 url, data=payload,
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=timeout) as res:
+            with urllib.request.urlopen(req, timeout=min(remaining, 55)) as res:
                 data = json.loads(res.read())
-                candidates = data.get("candidates") or []
-                if not candidates:
-                    current_app.logger.warning(f"Gemini empty candidates: {model_name}")
-                    continue
-                parts = (candidates[0].get("content") or {}).get("parts") or []
-                text = "".join(p.get("text", "") for p in parts if p.get("text") and not p.get("thought"))
-                if not text:
-                    text = "".join(p.get("text", "") for p in parts if p.get("text"))
-                if not text:
-                    finish = candidates[0].get("finishReason") or candidates[0].get("finish_reason")
-                    current_app.logger.warning(f"Gemini empty text: {model_name} finish={finish}")
-                    continue
+            text = _read_text(data)
+            if text:
                 current_app.logger.info(f"Gemini OK: {model_name}")
                 return text
+            finish = ((data.get("candidates") or [{}])[0].get("finishReason")
+                      or (data.get("candidates") or [{}])[0].get("finish_reason"))
+            current_app.logger.warning(f"Gemini empty text: {model_name} finish={finish}")
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                _MISSING_MODELS.add(model_name)
+                current_app.logger.warning(f"Gemini model not found: {model_name}")
+                continue
+            err_body = ""
+            try:
+                err_body = e.read().decode("utf-8", "ignore")[:160]
+            except Exception:
+                pass
+            if e.code == 400 and json_mode:
+                try:
+                    plain_payload = json.dumps({
+                        "contents": contents,
+                        "generationConfig": {
+                            "temperature": 0.3,
+                            "maxOutputTokens": generation_config["maxOutputTokens"],
+                        },
+                    }).encode()
+                    req2 = urllib.request.Request(
+                        url, data=plain_payload,
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    with urllib.request.urlopen(req2, timeout=min(max(8, deadline - time.monotonic()), 45)) as res2:
+                        text2 = _read_text(json.loads(res2.read()))
+                    if text2:
+                        current_app.logger.info(f"Gemini OK (plain): {model_name}")
+                        return text2
+                except Exception as e2:
+                    current_app.logger.warning(f"Gemini plain retry fail ({model_name}): {str(e2)[:120]}")
+            current_app.logger.warning(f"Gemini HTTP {e.code} ({model_name}): {err_body or str(e)[:120]}")
+            continue
         except Exception as e:
             err_str = str(e)
             if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str or "quota" in err_str.lower():
                 current_app.logger.warning(f"Gemini quota: {model_name}, next...")
                 continue
-            elif "404" in err_str or "not found" in err_str.lower():
-                current_app.logger.warning(f"Gemini model not found: {model_name}")
-                continue
-            elif "400" in err_str or "INVALID_ARGUMENT" in err_str:
-                # Một số model không hỗ trợ responseMimeType → thử lại không JSON mode 1 lần
-                if json_mode and "responseMimeType" in err_str.lower():
-                    current_app.logger.warning(f"Gemini JSON mime unsupported on {model_name}, retry plain")
-                    try:
-                        plain_body = {
-                            "contents": contents,
-                            "generationConfig": {
-                                "temperature": 0.4,
-                                "maxOutputTokens": generation_config["maxOutputTokens"],
-                            },
-                        }
-                        plain_payload = json.dumps(plain_body).encode()
-                        req2 = urllib.request.Request(
-                            url, data=plain_payload,
-                            headers={"Content-Type": "application/json"},
-                            method="POST",
-                        )
-                        with urllib.request.urlopen(req2, timeout=timeout) as res2:
-                            data2 = json.loads(res2.read())
-                            parts2 = (data2["candidates"][0].get("content") or {}).get("parts") or []
-                            text2 = "".join(p.get("text", "") for p in parts2 if p.get("text"))
-                            if text2:
-                                current_app.logger.info(f"Gemini OK (plain): {model_name}")
-                                return text2
-                    except Exception as e2:
-                        current_app.logger.warning(f"Gemini plain retry fail ({model_name}): {str(e2)[:120]}")
-                        continue
-                current_app.logger.warning(f"Gemini 400 ({model_name}): {err_str[:120]}")
-                continue
-            else:
-                current_app.logger.warning(f"Gemini error ({model_name}): {err_str[:120]}")
-                continue
+            current_app.logger.warning(f"Gemini error ({model_name}): {err_str[:120]}")
+            continue
 
     current_app.logger.warning("All Gemini models failed")
     return None
@@ -164,9 +169,9 @@ def generate_slide_image(
     prompt: str,
     *,
     aspect_ratio: str = "4:3",
-    timeout: int = 55,
+    timeout: int = 22,
 ) -> bytes | None:
-    """Tạo ảnh minh họa bằng Gemini Image (Nano Banana Pro / 2.1). Trả về PNG/JPEG bytes."""
+    """Tạo ảnh minh họa bằng Gemini Image. Trả về PNG/JPEG bytes."""
     import base64
     import json
     import urllib.request
@@ -188,10 +193,10 @@ def generate_slide_image(
 
     import urllib.error
 
-    for model_name in _image_models():
+    for model_name in _image_models()[:1]:
         url = GEMINI_REST_URL.format(model=model_name, key=api_key)
         skip_model = False
-        for cfg in configs:
+        for cfg in configs[:2]:
             body = {
                 "contents": [{"role": "user", "parts": [{"text": prompt}]}],
                 "generationConfig": cfg,
@@ -203,7 +208,7 @@ def generate_slide_image(
                     headers={"Content-Type": "application/json"},
                     method="POST",
                 )
-                with urllib.request.urlopen(req, timeout=timeout) as res:
+                with urllib.request.urlopen(req, timeout=min(int(timeout or 22), 25)) as res:
                     data = json.loads(res.read())
                 parts = ((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
                 for part in parts:
@@ -220,6 +225,7 @@ def generate_slide_image(
                 except Exception:
                     pass
                 if e.code == 404:
+                    _MISSING_MODELS.add(model_name)
                     current_app.logger.warning(f"Gemini image model missing: {model_name}")
                     skip_model = True
                     break
@@ -227,6 +233,7 @@ def generate_slide_image(
             except Exception as e:
                 err = str(e)
                 if "404" in err or "not found" in err.lower():
+                    _MISSING_MODELS.add(model_name)
                     current_app.logger.warning(f"Gemini image model missing: {model_name}")
                     skip_model = True
                     break
@@ -285,11 +292,11 @@ def _call_ai(
     Returns: (response_text, source_label)
     """
     provider = _get_provider()
-    gemini_timeout = timeout or (120 if json_mode or max_tokens >= 1500 else 45)
+    gemini_timeout = timeout or (75 if json_mode or max_tokens >= 1500 else 35)
     gemini_kwargs = {
         "json_mode": json_mode,
-        "timeout": gemini_timeout,
-        "max_output_tokens": max(max_tokens, 8192 if json_mode else 1024),
+        "timeout": min(int(gemini_timeout), 90),
+        "max_output_tokens": min(int(max_tokens or 1024), 8192),
     }
 
     def _openai_messages():
@@ -303,11 +310,13 @@ def _call_ai(
         text = _call_gemini(prompt, system, **gemini_kwargs)
         if text:
             return text, "gemini"
-        text = _call_openai(_openai_messages(), max_tokens)
-        if text:
-            return text, "openai"
+        # JSON Studio: không nối OpenAI (chậm, dễ vượt timeout server)
+        if not json_mode:
+            text = _call_openai(_openai_messages(), min(int(max_tokens or 800), 2000))
+            if text:
+                return text, "openai"
     else:
-        text = _call_openai(_openai_messages(), max_tokens)
+        text = _call_openai(_openai_messages(), min(int(max_tokens or 800), 2000))
         if text:
             return text, "openai"
         text = _call_gemini(prompt, system, **gemini_kwargs)

@@ -49,26 +49,40 @@ def _quiz_types(data: dict) -> list:
     return out or ["multiple_choice"]
 
 
+def _text(val, default=""):
+    if val is None or isinstance(val, (dict, list)):
+        return default
+    return str(val).strip()
+
+
+def _int(val, default: int, lo: int, hi: int) -> int:
+    try:
+        n = int(val)
+    except (TypeError, ValueError):
+        n = default
+    return max(lo, min(n, hi))
+
+
 def _base_payload():
     data = request.get_json() or {}
     return {
-        "grade": (data.get("grade") or "Lớp 6").strip(),
-        "subject": (data.get("subject") or "Hoạt động trải nghiệm").strip(),
-        "topic": (data.get("topic") or "").strip(),
-        "description": (data.get("description") or data.get("mo_ta") or "").strip(),
-        "language": data.get("language") or "bilingual",
+        "grade": _text(data.get("grade"), "Lớp 6") or "Lớp 6",
+        "subject": _text(data.get("subject"), "Hoạt động trải nghiệm") or "Hoạt động trải nghiệm",
+        "topic": _text(data.get("topic")),
+        "description": _text(data.get("description") or data.get("mo_ta")),
+        "language": _text(data.get("language"), "bilingual") or "bilingual",
         # kinds use fixed languages: lesson bilingual, quiz English, slides EN + notes VI
-        "extra_requirements": data.get("extra_requirements") or data.get("requirements") or "",
-        "theme_color": (data.get("theme_color") or data.get("primary_color") or "#0F2744").strip(),
-        "theme_accent": (data.get("theme_accent") or data.get("accent_color") or "#F39C4A").strip(),
+        "extra_requirements": _text(data.get("extra_requirements") or data.get("requirements")),
+        "theme_color": _text(data.get("theme_color") or data.get("primary_color"), "#0F2744") or "#0F2744",
+        "theme_accent": _text(data.get("theme_accent") or data.get("accent_color"), "#F39C4A") or "#F39C4A",
         "quiz_types": _quiz_types(data),
-        "quiz_requirements": (data.get("quiz_requirements") or "").strip(),
-        "num_questions": data.get("num_questions", 8),
-        "difficulty": data.get("difficulty") or "mixed",
-        "slide_count": data.get("slide_count", 12),
-        "lesson": data.get("lesson"),
-        "quiz": data.get("quiz"),
-        "deck": data.get("deck"),
+        "quiz_requirements": _text(data.get("quiz_requirements")),
+        "num_questions": _int(data.get("num_questions", 8), 8, 4, 12),
+        "difficulty": _text(data.get("difficulty"), "mixed") or "mixed",
+        "slide_count": _int(data.get("slide_count", 12), 12, 6, 12),
+        "lesson": data.get("lesson") if isinstance(data.get("lesson"), dict) else None,
+        "quiz": data.get("quiz") if isinstance(data.get("quiz"), dict) else None,
+        "deck": data.get("deck") if isinstance(data.get("deck"), dict) else None,
         "save": bool(data.get("save", True)),
     }
 
@@ -114,22 +128,32 @@ def generate_lesson():
     if not payload["topic"]:
         return jsonify({"message": "Vui lòng nhập chủ đề"}), 400
 
-    lesson = studio_service.generate_lesson_draft(
-        grade=payload["grade"],
-        subject=payload["subject"],
-        topic=payload["topic"],
-        language=payload["language"],
-        extra_requirements=payload["extra_requirements"],
-        description=payload["description"],
-        theme_color=payload["theme_color"],
-        theme_accent=payload["theme_accent"],
-    )
+    try:
+        lesson = studio_service.generate_lesson_draft(
+            grade=payload["grade"],
+            subject=payload["subject"],
+            topic=payload["topic"],
+            language=payload["language"],
+            extra_requirements=payload["extra_requirements"],
+            description=payload["description"],
+            theme_color=payload["theme_color"],
+            theme_accent=payload["theme_accent"],
+        )
+    except Exception:
+        from flask import current_app
+        current_app.logger.exception("POST /studio/generate/lesson")
+        return jsonify({"message": "Không tạo được giáo án. Thử lại sau ít phút."}), 502
 
     draft = None
     if payload["save"]:
-        db = get_db()
-        user_id = to_object_id(get_jwt_identity())
-        draft = _save_draft(db, user_id, "lesson", payload, lesson)
+        try:
+            db = get_db()
+            user_id = to_object_id(get_jwt_identity())
+            draft = _save_draft(db, user_id, "lesson", payload, lesson)
+        except Exception:
+            from flask import current_app
+            current_app.logger.exception("save lesson draft")
+            draft = None
 
     return jsonify({"lesson": lesson, "draft": draft})
 
@@ -159,12 +183,21 @@ def generate_quiz():
         )
     except studio_service.StudioGenerateError as exc:
         return jsonify({"message": str(exc)}), 502
+    except Exception:
+        from flask import current_app
+        current_app.logger.exception("POST /studio/generate/quiz")
+        return jsonify({"message": "Không tạo được đề. Thử lại sau ít phút."}), 502
 
     draft = None
     if payload["save"]:
-        db = get_db()
-        user_id = to_object_id(get_jwt_identity())
-        draft = _save_draft(db, user_id, "quiz", payload, quiz)
+        try:
+            db = get_db()
+            user_id = to_object_id(get_jwt_identity())
+            draft = _save_draft(db, user_id, "quiz", payload, quiz)
+        except Exception:
+            from flask import current_app
+            current_app.logger.exception("save quiz draft")
+            draft = None
 
     return jsonify({"quiz": quiz, "draft": draft})
 
@@ -177,24 +210,34 @@ def generate_pptx():
     if not payload["topic"]:
         return jsonify({"message": "Vui lòng nhập chủ đề"}), 400
 
-    deck = studio_service.generate_pptx_draft(
-        grade=payload["grade"],
-        subject=payload["subject"],
-        topic=payload["topic"],
-        slide_count=payload["slide_count"],
-        lesson_context=payload.get("lesson"),
-        language=payload["language"],
-        description=payload["description"],
-        extra_requirements=payload["extra_requirements"],
-        theme_color=payload["theme_color"],
-        theme_accent=payload["theme_accent"],
-    )
+    try:
+        deck = studio_service.generate_pptx_draft(
+            grade=payload["grade"],
+            subject=payload["subject"],
+            topic=payload["topic"],
+            slide_count=payload["slide_count"],
+            lesson_context=payload.get("lesson"),
+            language=payload["language"],
+            description=payload["description"],
+            extra_requirements=payload["extra_requirements"],
+            theme_color=payload["theme_color"],
+            theme_accent=payload["theme_accent"],
+        )
+    except Exception:
+        from flask import current_app
+        current_app.logger.exception("POST /studio/generate/pptx")
+        return jsonify({"message": "Không tạo được PowerPoint. Thử lại sau ít phút."}), 502
 
     draft = None
     if payload["save"]:
-        db = get_db()
-        user_id = to_object_id(get_jwt_identity())
-        draft = _save_draft(db, user_id, "pptx", payload, deck)
+        try:
+            db = get_db()
+            user_id = to_object_id(get_jwt_identity())
+            draft = _save_draft(db, user_id, "pptx", payload, deck)
+        except Exception:
+            from flask import current_app
+            current_app.logger.exception("save pptx draft")
+            draft = None
 
     return jsonify({"deck": deck, "draft": draft})
 
@@ -206,20 +249,34 @@ def generate_eight_step():
     payload = _base_payload()
     if not payload["topic"]:
         return jsonify({"message": "Vui lòng nhập chủ đề"}), 400
-    eight = studio_service.generate_eight_step_draft(
-        grade=payload["grade"],
-        subject=payload["subject"],
-        topic=payload["topic"],
-        description=payload["description"],
-        extra_requirements=payload["extra_requirements"],
-        lesson_context=payload.get("lesson"),
-        quiz_context=payload.get("quiz"),
-    )
+    try:
+        eight = studio_service.generate_eight_step_draft(
+            grade=payload["grade"],
+            subject=payload["subject"],
+            topic=payload["topic"],
+            description=payload["description"],
+            extra_requirements=payload["extra_requirements"],
+            lesson_context=payload.get("lesson"),
+            quiz_context=payload.get("quiz"),
+        )
+    except Exception:
+        from flask import current_app
+        current_app.logger.exception("POST /studio/generate/eight-step")
+        eight = studio_service._normalize_eight_step(
+            {}, payload["grade"], payload["subject"], payload["topic"], payload["description"],
+        )
+        eight["source"] = "template"
+        eight["note"] = "AI gặp lỗi khi soạn bài học. Đã dùng bản khung — hãy tạo lại."
     draft = None
     if payload["save"]:
-        db = get_db()
-        user_id = to_object_id(get_jwt_identity())
-        draft = _save_draft(db, user_id, "eight_step", payload, eight)
+        try:
+            db = get_db()
+            user_id = to_object_id(get_jwt_identity())
+            draft = _save_draft(db, user_id, "eight_step", payload, eight)
+        except Exception:
+            from flask import current_app
+            current_app.logger.exception("save eight-step draft")
+            draft = None
     return jsonify({"eight_step": eight, "draft": draft})
 
 
