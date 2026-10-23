@@ -21,6 +21,49 @@ DARK = (0x1E, 0x29, 0x3B)
 MUTED = (0x64, 0x74, 0x8B)
 
 
+def _parse_hex(value, fallback=NAVY):
+    text = str(value or "").strip().lstrip("#")
+    if len(text) == 3:
+        text = "".join(ch * 2 for ch in text)
+    if len(text) != 6:
+        return fallback
+    try:
+        return tuple(int(text[i : i + 2], 16) for i in (0, 2, 4))
+    except ValueError:
+        return fallback
+
+
+def derive_palette(primary="#0F2744", accent="#F39C4A") -> dict:
+    navy = _parse_hex(primary, NAVY)
+    orange = _parse_hex(accent, ORANGE)
+    teal = (
+        min(255, int(navy[0] * 0.2 + 26)),
+        min(255, int(navy[1] * 0.3 + 140)),
+        min(255, int(navy[2] * 0.35 + 120)),
+    )
+    sky = tuple(min(255, int(c + (255 - c) * 0.86)) for c in navy)
+    soft = tuple(min(255, int(c + (255 - c) * 0.93)) for c in navy)
+    return {
+        "navy": navy,
+        "orange": orange,
+        "teal": teal,
+        "sky": sky,
+        "soft": soft,
+        "white": WHITE,
+        "dark": navy,
+        "muted": MUTED,
+    }
+
+
+def P(meta, name):
+    pal = (meta or {}).get("palette") or {}
+    defaults = {
+        "navy": NAVY, "orange": ORANGE, "teal": TEAL, "sky": SKY,
+        "soft": SOFT, "white": WHITE, "dark": DARK, "muted": MUTED,
+    }
+    return pal.get(name, defaults[name])
+
+
 def _rgb(tup):
     from pptx.dml.color import RGBColor
     return RGBColor(*tup)
@@ -295,32 +338,42 @@ def json_loads_safe(text: str):
 
 
 def _related_image_bytes(keyword: str, topic: str = "", title: str = "") -> bytes:
-    """Prefer Commons photo matching content; else themed illustration."""
+    """Prefer Vietnam-related Commons photos matching content; else themed illustration."""
     query = _search_query(keyword, topic, title)
-    # try a few related queries
-    candidates = [query]
-    theme = _theme_key(query)
+    theme = _theme_key(f"{query} {topic} {title}")
     theme_queries = {
-        "flag": "vietnam school flag raising ceremony students",
-        "recycle": "recycling plastic bottles bins",
-        "nature": "green trees forest environment",
-        "water": "clean water river ocean",
-        "energy": "solar energy renewable power",
-        "school": "students classroom learning",
-        "team": "students teamwork discussion",
-        "book": "mathematics numbers classroom chalkboard",
-        "home": "family home daily life",
-        "learn": "education classroom students",
+        "flag": "vietnam school flag raising ceremony students red flag yellow star",
+        "recycle": "vietnam students recycling plastic bottles",
+        "nature": "vietnam school green trees garden",
+        "water": "vietnam river clean water",
+        "energy": "vietnam solar energy school",
+        "school": "vietnamese students classroom school",
+        "team": "vietnamese students teamwork school",
+        "book": "vietnam classroom chalkboard students",
+        "home": "vietnam family home daily life",
+        "learn": "vietnamese students school experiential learning",
     }
-    candidates.append(theme_queries.get(theme, "education"))
+    vn_theme = theme_queries.get(theme, "vietnamese students school")
+    candidates = [
+        f"{query} Vietnam",
+        f"{query} Việt Nam",
+        vn_theme,
+        f"Vietnam {query}",
+        query,
+    ]
+    seen = set()
     for q in candidates:
+        key = (q or "").strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
         img = _fetch_wikimedia_image(q)
         if img:
             return img
     return _make_themed_illustration(keyword, topic, title)
 
 
-def _add_image_or_art(slide, left, top, width, height, keyword: str, topic: str, title: str = ""):
+def _add_image_or_art(slide, left, top, width, height, keyword: str, topic: str, title: str = "", meta=None):
     """Place a content-related photo or themed illustration."""
     from pptx.enum.shapes import MSO_SHAPE
     from pptx.util import Inches
@@ -330,15 +383,14 @@ def _add_image_or_art(slide, left, top, width, height, keyword: str, topic: str,
         stream = io.BytesIO(img)
         slide.shapes.add_picture(stream, left, top, width=width, height=height)
         bar = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, left, top + height - Inches(0.12), width, Inches(0.12))
-        _fill_shape(bar, ORANGE)
+        _fill_shape(bar, P(meta, "orange"))
         return
     except Exception:
-        # last-resort shapes
         panel = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, left, top, width, height)
-        _fill_shape(panel, SKY)
+        _fill_shape(panel, P(meta, "sky"))
         _add_textbox(
             slide, left + Inches(0.2), top + height / 2 - Inches(0.3), width - Inches(0.4), Inches(0.6),
-            (keyword or topic or "Topic")[:28], size=16, bold=True, color=NAVY, align="center",
+            (keyword or topic or "Topic")[:28], size=16, bold=True, color=P(meta, "navy"), align="center",
         )
 
 
@@ -485,19 +537,19 @@ def _ids_of(shapes) -> list[int]:
     return out
 
 
-def _footer(slide, prs, page: int, total: int, topic: str):
-    from pptx.util import Inches, Pt
+def _footer(slide, prs, page: int, total: int, topic: str, meta=None):
+    from pptx.util import Inches
 
-    bar = _add_rect(slide, 0, Inches(7.15), prs.slide_width, Inches(0.35), ORANGE)
+    bar = _add_rect(slide, 0, Inches(7.15), prs.slide_width, Inches(0.35), P(meta, "orange"))
     _add_textbox(
         slide, Inches(0.4), Inches(7.18), Inches(9), Inches(0.3),
-        f"Experiential Learning  ·  {topic[:50]}",
-        size=10, color=WHITE,
+        f"Hoạt động trải nghiệm  ·  {topic[:50]}",
+        size=10, color=P(meta, "white"),
     )
     _add_textbox(
         slide, Inches(11.2), Inches(7.18), Inches(1.8), Inches(0.3),
         f"{page} / {total}",
-        size=10, color=WHITE, align="right",
+        size=10, color=P(meta, "white"), align="right",
     )
 
 
@@ -505,27 +557,28 @@ def _layout_title(slide, prs, data, meta):
     from pptx.enum.shapes import MSO_SHAPE
     from pptx.util import Inches
 
-    _add_rect(slide, 0, 0, prs.slide_width, prs.slide_height, NAVY)
-    _add_rect(slide, Inches(8.2), 0, Inches(5.2), prs.slide_height, TEAL)
+    _add_rect(slide, 0, 0, prs.slide_width, prs.slide_height, P(meta, "navy"))
+    _add_rect(slide, Inches(8.2), 0, Inches(5.2), prs.slide_height, P(meta, "teal"))
     accent = slide.shapes.add_shape(MSO_SHAPE.RIGHT_TRIANGLE, Inches(7.2), 0, Inches(1.2), prs.slide_height)
-    _fill_shape(accent, TEAL)
-    _add_rect(slide, 0, Inches(6.9), Inches(8.2), Inches(0.6), ORANGE)
+    _fill_shape(accent, P(meta, "teal"))
+    _add_rect(slide, 0, Inches(6.9), Inches(8.2), Inches(0.6), P(meta, "orange"))
 
     title = data.get("title") or meta.get("topic") or "Lesson"
-    subtitle = data.get("subtitle") or meta.get("subject") or "Experiential Learning"
+    subtitle = data.get("subtitle") or meta.get("subject") or "Hoạt động trải nghiệm"
     title_size = 40 if len(title) < 42 else (32 if len(title) < 70 else 26)
-    t1 = _add_textbox(slide, Inches(0.7), Inches(1.7), Inches(6.8), Inches(2.2), title, size=title_size, bold=True, color=WHITE)
-    t2 = _add_textbox(slide, Inches(0.7), Inches(4.1), Inches(6.8), Inches(0.9), subtitle, size=20, color=SKY)
+    t1 = _add_textbox(slide, Inches(0.7), Inches(1.7), Inches(6.8), Inches(2.2), title, size=title_size, bold=True, color=P(meta, "white"))
+    t2 = _add_textbox(slide, Inches(0.7), Inches(4.1), Inches(6.8), Inches(0.9), subtitle, size=20, color=P(meta, "sky"))
     meta_line = f"{meta.get('grade', '')}  ·  {meta.get('subject', '')}"
-    t3 = _add_textbox(slide, Inches(0.7), Inches(5.2), Inches(6.8), Inches(0.5), meta_line, size=15, color=ORANGE)
+    t3 = _add_textbox(slide, Inches(0.7), Inches(5.2), Inches(6.8), Inches(0.5), meta_line, size=15, color=P(meta, "orange"))
     bullets = data.get("bullets") or []
     anim = [t1, t2, t3]
     if bullets:
-        anim.extend(_add_bullets(slide, Inches(0.7), Inches(5.7), Inches(6.8), Inches(1.0), bullets[:3], size=14, color=SKY))
+        anim.extend(_add_bullets(slide, Inches(0.7), Inches(5.7), Inches(6.8), Inches(1.0), bullets[:3], size=14, color=P(meta, "sky")))
     _add_image_or_art(
         slide, Inches(8.6), Inches(1.3), Inches(4.2), Inches(4.5),
         data.get("image_keyword") or meta.get("topic"), meta.get("topic"),
         title=data.get("title") or "",
+        meta=meta,
     )
     return anim
 
@@ -533,19 +586,20 @@ def _layout_title(slide, prs, data, meta):
 def _layout_content(slide, prs, data, meta, page, total):
     from pptx.util import Inches
 
-    _add_rect(slide, 0, 0, prs.slide_width, prs.slide_height, SOFT)
-    _add_rect(slide, 0, 0, prs.slide_width, Inches(1.15), NAVY)
-    _add_rect(slide, 0, Inches(1.15), Inches(0.18), Inches(6.0), ORANGE)
-    title_box = _add_textbox(slide, Inches(0.55), Inches(0.28), Inches(8.5), Inches(0.7), data.get("title") or "Content", size=26, bold=True, color=WHITE)
+    _add_rect(slide, 0, 0, prs.slide_width, prs.slide_height, P(meta, "soft"))
+    _add_rect(slide, 0, 0, prs.slide_width, Inches(1.15), P(meta, "navy"))
+    _add_rect(slide, 0, Inches(1.15), Inches(0.18), Inches(6.0), P(meta, "orange"))
+    title_box = _add_textbox(slide, Inches(0.55), Inches(0.28), Inches(8.5), Inches(0.7), data.get("title") or "Content", size=26, bold=True, color=P(meta, "white"))
     bullets = data.get("bullets") or data.get("left_bullets") or []
     fs = _bullet_font_size(bullets, base=19, few=24, many=16)
-    bullet_shapes = _add_bullets(slide, Inches(0.6), Inches(1.5), Inches(7.0), Inches(5.2), bullets, size=fs, color=NAVY)
+    bullet_shapes = _add_bullets(slide, Inches(0.6), Inches(1.5), Inches(7.0), Inches(5.2), bullets, size=fs, color=P(meta, "navy"))
     _add_image_or_art(
         slide, Inches(8.0), Inches(1.55), Inches(4.8), Inches(5.0),
         data.get("image_keyword") or meta.get("topic"), meta.get("topic"),
         title=data.get("title") or "",
+        meta=meta,
     )
-    _footer(slide, prs, page, total, meta.get("topic", ""))
+    _footer(slide, prs, page, total, meta.get("topic", ""), meta)
     return [title_box, *bullet_shapes]
 
 
@@ -553,36 +607,36 @@ def _layout_two_column(slide, prs, data, meta, page, total):
     from pptx.enum.shapes import MSO_SHAPE
     from pptx.util import Inches
 
-    _add_rect(slide, 0, 0, prs.slide_width, prs.slide_height, SOFT)
-    _add_rect(slide, 0, 0, prs.slide_width, Inches(1.15), NAVY)
-    title_box = _add_textbox(slide, Inches(0.55), Inches(0.28), Inches(12), Inches(0.7), data.get("title") or "Compare", size=26, bold=True, color=WHITE)
+    _add_rect(slide, 0, 0, prs.slide_width, prs.slide_height, P(meta, "soft"))
+    _add_rect(slide, 0, 0, prs.slide_width, Inches(1.15), P(meta, "navy"))
+    title_box = _add_textbox(slide, Inches(0.55), Inches(0.28), Inches(12), Inches(0.7), data.get("title") or "Compare", size=26, bold=True, color=P(meta, "white"))
 
     left = data.get("left_bullets") or (data.get("bullets") or [])[:4]
     right = data.get("right_bullets") or (data.get("bullets") or [])[4:8] or left
     c1 = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(0.5), Inches(1.45), Inches(5.9), Inches(5.3))
-    _fill_shape(c1, WHITE)
-    c1.line.color.rgb = _rgb(SKY)
+    _fill_shape(c1, P(meta, "white"))
+    c1.line.color.rgb = _rgb(P(meta, "sky"))
     c2 = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(6.9), Inches(1.45), Inches(5.9), Inches(5.3))
-    _fill_shape(c2, WHITE)
-    c2.line.color.rgb = _rgb(SKY)
-    _add_rect(slide, Inches(0.5), Inches(1.45), Inches(5.9), Inches(0.15), TEAL)
-    _add_rect(slide, Inches(6.9), Inches(1.45), Inches(5.9), Inches(0.15), ORANGE)
-    h1 = _add_textbox(slide, Inches(0.75), Inches(1.75), Inches(5.4), Inches(0.4), data.get("left_title") or "Overview", size=17, bold=True, color=TEAL)
-    h2 = _add_textbox(slide, Inches(7.15), Inches(1.75), Inches(5.4), Inches(0.4), data.get("right_title") or "Practice", size=17, bold=True, color=ORANGE)
+    _fill_shape(c2, P(meta, "white"))
+    c2.line.color.rgb = _rgb(P(meta, "sky"))
+    _add_rect(slide, Inches(0.5), Inches(1.45), Inches(5.9), Inches(0.15), P(meta, "teal"))
+    _add_rect(slide, Inches(6.9), Inches(1.45), Inches(5.9), Inches(0.15), P(meta, "orange"))
+    h1 = _add_textbox(slide, Inches(0.75), Inches(1.75), Inches(5.4), Inches(0.4), data.get("left_title") or "Overview", size=17, bold=True, color=P(meta, "teal"))
+    h2 = _add_textbox(slide, Inches(7.15), Inches(1.75), Inches(5.4), Inches(0.4), data.get("right_title") or "Practice", size=17, bold=True, color=P(meta, "orange"))
     fs_l = _bullet_font_size(left, base=17, few=21, many=14)
     fs_r = _bullet_font_size(right, base=17, few=21, many=14)
-    left_shapes = _add_bullets(slide, Inches(0.75), Inches(2.3), Inches(5.4), Inches(4.1), left, size=fs_l, color=NAVY)
-    right_shapes = _add_bullets(slide, Inches(7.15), Inches(2.3), Inches(5.4), Inches(4.1), right, size=fs_r, color=NAVY)
-    _footer(slide, prs, page, total, meta.get("topic", ""))
+    left_shapes = _add_bullets(slide, Inches(0.75), Inches(2.3), Inches(5.4), Inches(4.1), left, size=fs_l, color=P(meta, "navy"))
+    right_shapes = _add_bullets(slide, Inches(7.15), Inches(2.3), Inches(5.4), Inches(4.1), right, size=fs_r, color=P(meta, "navy"))
+    _footer(slide, prs, page, total, meta.get("topic", ""), meta)
     return [title_box, h1, *left_shapes, h2, *right_shapes]
 
 
 def _layout_table(slide, prs, data, meta, page, total):
     from pptx.util import Inches, Pt
 
-    _add_rect(slide, 0, 0, prs.slide_width, prs.slide_height, SOFT)
-    _add_rect(slide, 0, 0, prs.slide_width, Inches(1.15), NAVY)
-    title_box = _add_textbox(slide, Inches(0.55), Inches(0.28), Inches(12), Inches(0.7), data.get("title") or "Summary Table", size=26, bold=True, color=WHITE)
+    _add_rect(slide, 0, 0, prs.slide_width, prs.slide_height, P(meta, "soft"))
+    _add_rect(slide, 0, 0, prs.slide_width, Inches(1.15), P(meta, "navy"))
+    title_box = _add_textbox(slide, Inches(0.55), Inches(0.28), Inches(12), Inches(0.7), data.get("title") or "Summary Table", size=26, bold=True, color=P(meta, "white"))
 
     table_data = data.get("table") or {}
     headers = table_data.get("headers") or ["Item", "Details", "Notes"]
@@ -601,9 +655,9 @@ def _layout_table(slide, prs, data, meta, page, total):
         cell.text = str(h)
         for p in cell.text_frame.paragraphs:
             for r in p.runs:
-                _set_run(r, size=Pt(14), bold=True, color=WHITE)
+                _set_run(r, size=Pt(14), bold=True, color=P(meta, "white"))
         cell.fill.solid()
-        cell.fill.fore_color.rgb = _rgb(NAVY)
+        cell.fill.fore_color.rgb = _rgb(P(meta, "navy"))
 
     for r_idx, row in enumerate(rows[: n_rows - 1], start=1):
         for c in range(cols):
@@ -612,11 +666,11 @@ def _layout_table(slide, prs, data, meta, page, total):
             cell.text = str(val)
             for p in cell.text_frame.paragraphs:
                 for run in p.runs:
-                    _set_run(run, size=Pt(body_size), color=NAVY)
+                    _set_run(run, size=Pt(body_size), color=P(meta, "navy"))
             cell.fill.solid()
-            cell.fill.fore_color.rgb = _rgb(WHITE if r_idx % 2 else SKY)
+            cell.fill.fore_color.rgb = _rgb(P(meta, "white") if r_idx % 2 else P(meta, "sky"))
 
-    _footer(slide, prs, page, total, meta.get("topic", ""))
+    _footer(slide, prs, page, total, meta.get("topic", ""), meta)
     return [title_box]
 
 
@@ -624,16 +678,16 @@ def _layout_cards(slide, prs, data, meta, page, total):
     from pptx.enum.shapes import MSO_SHAPE
     from pptx.util import Inches
 
-    _add_rect(slide, 0, 0, prs.slide_width, prs.slide_height, SOFT)
-    _add_rect(slide, 0, 0, prs.slide_width, Inches(1.15), NAVY)
-    title_box = _add_textbox(slide, Inches(0.55), Inches(0.28), Inches(12), Inches(0.7), data.get("title") or "Key Ideas", size=26, bold=True, color=WHITE)
+    _add_rect(slide, 0, 0, prs.slide_width, prs.slide_height, P(meta, "soft"))
+    _add_rect(slide, 0, 0, prs.slide_width, Inches(1.15), P(meta, "navy"))
+    title_box = _add_textbox(slide, Inches(0.55), Inches(0.28), Inches(12), Inches(0.7), data.get("title") or "Key Ideas", size=26, bold=True, color=P(meta, "white"))
 
     bullets = data.get("bullets") or ["Idea 1", "Idea 2", "Idea 3"]
     cards_n = min(max(len(bullets), 3), 4)
     # pad if fewer than 3
     while len(bullets) < cards_n:
         bullets.append("Add classroom example")
-    colors = [TEAL, ORANGE, NAVY, TEAL]
+    colors = [P(meta, "teal"), P(meta, "orange"), P(meta, "navy"), P(meta, "teal")]
     width = Inches(2.9) if cards_n == 4 else Inches(3.8)
     gap = Inches(0.28) if cards_n == 4 else Inches(0.35)
     start = Inches(0.5)
@@ -642,13 +696,13 @@ def _layout_cards(slide, prs, data, meta, page, total):
     for i, text in enumerate(bullets[:cards_n]):
         left = start + i * (width + gap)
         card = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, left, Inches(1.6), width, Inches(4.9))
-        _fill_shape(card, WHITE)
+        _fill_shape(card, P(meta, "white"))
         top = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, left, Inches(1.6), width, Inches(0.85))
         _fill_shape(top, colors[i % len(colors)])
-        num = _add_textbox(slide, left + Inches(0.15), Inches(1.75), width - Inches(0.3), Inches(0.5), f"0{i+1}", size=20, bold=True, color=WHITE, align="center")
-        body = _add_textbox(slide, left + Inches(0.2), Inches(2.7), width - Inches(0.4), Inches(3.4), str(text), size=text_size, bold=True, color=NAVY, align="center")
+        num = _add_textbox(slide, left + Inches(0.15), Inches(1.75), width - Inches(0.3), Inches(0.5), f"0{i+1}", size=20, bold=True, color=P(meta, "white"), align="center")
+        body = _add_textbox(slide, left + Inches(0.2), Inches(2.7), width - Inches(0.4), Inches(3.4), str(text), size=text_size, bold=True, color=P(meta, "navy"), align="center")
         anim.extend([card, num, body])
-    _footer(slide, prs, page, total, meta.get("topic", ""))
+    _footer(slide, prs, page, total, meta.get("topic", ""), meta)
     return anim
 
 
@@ -656,17 +710,17 @@ def _layout_closing(slide, prs, data, meta):
     from pptx.enum.shapes import MSO_SHAPE
     from pptx.util import Inches
 
-    _add_rect(slide, 0, 0, prs.slide_width, prs.slide_height, NAVY)
+    _add_rect(slide, 0, 0, prs.slide_width, prs.slide_height, P(meta, "navy"))
     circ = slide.shapes.add_shape(MSO_SHAPE.OVAL, Inches(10.5), Inches(-1.2), Inches(4), Inches(4))
-    _fill_shape(circ, TEAL)
+    _fill_shape(circ, P(meta, "teal"))
     circ2 = slide.shapes.add_shape(MSO_SHAPE.OVAL, Inches(-1.5), Inches(5.2), Inches(3.5), Inches(3.5))
-    _fill_shape(circ2, ORANGE)
-    title = data.get("title") or "Thank You"
+    _fill_shape(circ2, P(meta, "orange"))
+    title = data.get("title") or "Cảm ơn"
     title_size = 42 if len(title) < 28 else 32
-    t1 = _add_textbox(slide, Inches(1), Inches(2.2), Inches(11), Inches(1.2), title, size=title_size, bold=True, color=WHITE, align="center")
+    t1 = _add_textbox(slide, Inches(1), Inches(2.2), Inches(11), Inches(1.2), title, size=title_size, bold=True, color=P(meta, "white"), align="center")
     bullets = data.get("bullets") or ["Questions welcome", "See you next lesson"]
-    t2 = _add_textbox(slide, Inches(1.5), Inches(3.7), Inches(10), Inches(1.6), "\n".join(f"●  {b}" for b in bullets[:4]), size=18, color=SKY, align="center")
-    t3 = _add_textbox(slide, Inches(2), Inches(5.6), Inches(9), Inches(0.5), meta.get("topic", ""), size=14, color=ORANGE, align="center")
+    t2 = _add_textbox(slide, Inches(1.5), Inches(3.7), Inches(10), Inches(1.6), "\n".join(f"●  {b}" for b in bullets[:4]), size=18, color=P(meta, "sky"), align="center")
+    t3 = _add_textbox(slide, Inches(2), Inches(5.6), Inches(9), Inches(0.5), meta.get("topic", ""), size=14, color=P(meta, "orange"), align="center")
     return [t1, t2, t3]
 
 
@@ -681,8 +735,10 @@ def build_rich_pptx_bytes(deck: dict) -> bytes:
 
     meta = {
         "grade": deck.get("grade") or "",
-        "subject": deck.get("subject") or "Experiential Learning",
+        "subject": deck.get("subject") or "Hoạt động trải nghiệm",
         "topic": deck.get("topic") or deck.get("title") or "Lesson",
+        "language": deck.get("language") or "vi",
+        "palette": derive_palette(deck.get("theme_color"), deck.get("theme_accent")),
     }
     slides = list(deck.get("slides") or [])
     if not slides:

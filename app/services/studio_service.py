@@ -69,13 +69,25 @@ def _parse_json(text: str) -> dict | None:
     return None
 
 
-def _fallback_lesson(grade: str, subject: str, topic: str, language: str) -> dict:
+def _brief_requirements(description: str = "", extra: str = "", quiz_req: str = "") -> str:
+    parts = []
+    if description:
+        parts.append(f"MÔ TẢ BẮT BUỘC bám sát: {description}")
+    if extra:
+        parts.append(f"YÊU CẦU THÊM (phải thể hiện trong nội dung): {extra}")
+    if quiz_req:
+        parts.append(f"YÊU CẦU ĐỀ: {quiz_req}")
+    return "\n".join(parts) if parts else "Không có yêu cầu thêm."
+
+
+def _fallback_lesson(grade: str, subject: str, topic: str, language: str, description: str = "") -> dict:
     return {
         "title_vi": f"Giáo án trải nghiệm: {topic}",
         "title_en": f"Experiential Lesson Plan: {topic}",
         "grade": grade,
         "subject": subject,
         "topic": topic,
+        "description": description,
         "duration_minutes": 45,
         "materials": [
             "Projector / slides",
@@ -155,36 +167,75 @@ def _fallback_lesson(grade: str, subject: str, topic: str, language: str) -> dic
     }
 
 
-def _fallback_quiz(grade: str, subject: str, topic: str, num_questions: int) -> dict:
+def _fallback_quiz(
+    grade: str,
+    subject: str,
+    topic: str,
+    num_questions: int,
+    quiz_types: list | None = None,
+    language: str = "vi",
+) -> dict:
+    types = quiz_types or ["multiple_choice"]
     questions = []
     for i in range(1, num_questions + 1):
-        questions.append({
-            "question_text": f"Câu {i}: Khái niệm nào liên quan đến {topic}?",
-            "question_type": "multiple_choice",
-            "options": [
-                f"A. Khái niệm đúng về {topic}",
-                "B. Khái niệm không liên quan",
-                "C. Thông tin sai",
-                "D. Không có đáp án",
-            ],
-            "correct_answer": f"A. Khái niệm đúng về {topic}",
-            "explanation": f"Đáp án A phù hợp nhất với chủ đề {topic}.",
-            "points": 1,
-        })
+        qtype = types[(i - 1) % len(types)]
+        if qtype == "essay":
+            questions.append({
+                "question_text": f"Câu {i}: Em hãy trình bày suy nghĩ / ý nghĩa của chủ đề {topic}.",
+                "question_type": "essay",
+                "options": [],
+                "correct_answer": f"Bài viết nêu rõ nội dung, ví dụ thực tế và liên hệ {topic}.",
+                "sample_answer": f"Học sinh nêu khái niệm, ý nghĩa và một ví dụ gắn với {topic}.",
+                "explanation": "Chấm theo ý chính, lập luận và ví dụ.",
+                "points": 2,
+            })
+        elif qtype == "true_false":
+            questions.append({
+                "question_text": f"Câu {i}: {topic} là hoạt động có ý nghĩa giáo dục.",
+                "question_type": "true_false",
+                "options": ["Đúng", "Sai"],
+                "correct_answer": "Đúng",
+                "explanation": f"Chủ đề {topic} mang ý nghĩa giáo dục.",
+                "points": 1,
+            })
+        elif qtype == "fill_blank":
+            questions.append({
+                "question_text": f"Câu {i}: Điền từ còn thiếu: Hoạt động {topic} giúp học sinh rèn luyện ______.",
+                "question_type": "fill_blank",
+                "options": [],
+                "correct_answer": "kỹ năng / phẩm chất",
+                "explanation": "Học sinh nêu kỹ năng hoặc phẩm chất phù hợp.",
+                "points": 1,
+            })
+        else:
+            questions.append({
+                "question_text": f"Câu {i}: Khái niệm nào liên quan đến {topic}?",
+                "question_type": "multiple_choice",
+                "options": [
+                    f"A. Nội dung đúng về {topic}",
+                    "B. Khái niệm không liên quan",
+                    "C. Thông tin sai",
+                    "D. Không có đáp án",
+                ],
+                "correct_answer": f"A. Nội dung đúng về {topic}",
+                "explanation": f"Đáp án A phù hợp nhất với chủ đề {topic}.",
+                "points": 1,
+            })
     return {
         "title": f"Đề kiểm tra: {topic}",
         "grade": grade,
         "subject": subject,
         "topic": topic,
+        "language": language,
         "passing_score": 60,
         "time_limit_minutes": 20,
         "questions": questions,
         "source": "template",
-        "note": "Đề mẫu tạm. Gắn GEMINI_API_KEY để AI tạo đề chuyên sâu hơn.",
+        "note": "Đề mẫu tạm. Admin nhập API key để AI tạo đề chuyên sâu hơn.",
     }
 
 
-def _fallback_slides(grade: str, subject: str, topic: str, slide_count: int) -> dict:
+def _fallback_slides(grade: str, subject: str, topic: str, slide_count: int, language: str = "vi") -> dict:
     slides = [
         {
             "layout": "title",
@@ -272,10 +323,10 @@ def _fallback_slides(grade: str, subject: str, topic: str, slide_count: int) -> 
         "grade": grade,
         "subject": subject,
         "topic": topic,
-        "language": "en",
+        "language": language or "vi",
         "slides": slides[: max(6, min(slide_count, 16))],
         "source": "template",
-        "note": "Template deck (AI unavailable). Set GEMINI_API_KEY for richer English slides.",
+        "note": "Bản slide mẫu (AI chưa sẵn sàng).",
     }
 
 
@@ -285,7 +336,11 @@ def generate_lesson_draft(
     topic: str,
     language: str = "bilingual",
     extra_requirements: str = "",
+    description: str = "",
+    theme_color: str = "#0F2744",
+    theme_accent: str = "#F39C4A",
 ) -> dict:
+    req = _brief_requirements(description, extra_requirements)
     prompt = f"""
 Tạo giáo án trải nghiệm ĐẦY ĐỦ theo JSON (nội dung sư phạm chi tiết, không viết quá ngắn):
 {{
@@ -294,6 +349,7 @@ Tạo giáo án trải nghiệm ĐẦY ĐỦ theo JSON (nội dung sư phạm ch
   "grade": "{grade}",
   "subject": "{subject}",
   "topic": "{topic}",
+  "description": "{description}",
   "duration_minutes": 45,
   "materials": ["...", "..."],
   "objectives_vi": ["...", "...", "...", "..."],
@@ -320,12 +376,13 @@ Tạo giáo án trải nghiệm ĐẦY ĐỦ theo JSON (nội dung sư phạm ch
   "notes": "ghi chú ngắn cho giáo viên"
 }}
 
-Yêu cầu:
+Yêu cầu BẮT BUỘC:
 - 5-6 sections (Khởi động, Kiến thức, Trải nghiệm, Luyện tập, Phản ánh/Đánh giá, ...)
-- Mỗi content_vi/content_en đủ ý, rõ ràng, phù hợp lớp {grade}
+- Mỗi content_vi/content_en đủ ý, rõ ràng, phù hợp lớp {grade}, môn {subject}
 - vocabulary 6-10 mục
-- Ngôn ngữ ưu tiên: {language}
-- Yêu cầu thêm: {extra_requirements or "không"}
+- Ngôn ngữ ưu tiên: {language} (vi = viết kỹ tiếng Việt; en = English; bilingual = cả hai)
+- Màu chủ đạo (ghi vào notes nếu cần đồ dùng/trang trí): {theme_color} / nhấn {theme_accent}
+- {req}
 Chỉ trả về JSON hợp lệ.
 """
     text, source = _call_ai(
@@ -333,13 +390,16 @@ Chỉ trả về JSON hợp lệ.
     )
     data = _parse_json(text) if text else None
     if not data or not (data.get("sections") or data.get("objectives_vi")):
-        return _fallback_lesson(grade, subject, topic, language)
+        return _fallback_lesson(grade, subject, topic, language, description)
     data.setdefault("grade", grade)
     data.setdefault("subject", subject)
     data.setdefault("topic", topic)
+    data.setdefault("description", description)
     data.setdefault("duration_minutes", 45)
     data["source"] = source or "ai"
     data["language"] = language
+    data["theme_color"] = theme_color
+    data["theme_accent"] = theme_accent
     data.pop("note", None)
     return data
 
@@ -350,32 +410,56 @@ def generate_quiz_draft(
     topic: str,
     num_questions: int = 8,
     difficulty: str = "mixed",
+    language: str = "vi",
+    description: str = "",
+    extra_requirements: str = "",
+    quiz_types: list | None = None,
+    quiz_requirements: str = "",
+    theme_color: str = "#0F2744",
+    theme_accent: str = "#F39C4A",
 ) -> dict:
     num_questions = max(3, min(int(num_questions or 8), 20))
+    types = quiz_types or ["multiple_choice"]
+    types_text = ", ".join(types)
+    req = _brief_requirements(description, extra_requirements, quiz_requirements)
+    lang_rule = {
+        "vi": "Viết TOÀN BỘ câu hỏi, đáp án, giải thích bằng tiếng Việt.",
+        "en": "Write ALL questions, options, explanations in English.",
+        "bilingual": "Câu hỏi tiếng Việt; có thể thêm thuật ngữ English trong ngoặc.",
+    }.get(language, "Viết câu hỏi bằng tiếng Việt.")
     prompt = f"""
-Tạo đề kiểm tra trắc nghiệm JSON:
+Tạo đề kiểm tra JSON — PHẢI đúng loại câu và yêu cầu giáo viên:
 {{
   "title": "...",
   "grade": "...",
   "subject": "...",
   "topic": "...",
+  "description": "{description}",
   "passing_score": 60,
   "time_limit_minutes": 20,
   "questions": [
     {{
       "question_text": "...",
-      "question_type": "multiple_choice",
+      "question_type": "multiple_choice|true_false|fill_blank|essay",
       "options": ["A. ...", "B. ...", "C. ...", "D. ..."],
-      "correct_answer": "A. ...",
+      "correct_answer": "A. ... hoặc đáp án điền/Đúng-Sai",
+      "sample_answer": "gợi ý chấm tự luận (nếu essay)",
       "explanation": "...",
       "points": 1
     }}
   ]
 }}
 
-Lớp: {grade}; Môn: {subject}; Chủ đề: {topic};
+Lớp: {grade}; Môn: {subject}; Chủ đề: {topic}.
 Số câu: {num_questions}; Độ khó: {difficulty}.
-Câu hỏi bằng tiếng Anh kèm gợi ý tiếng Việt trong explanation nếu cần.
+Loại câu BẮT BUỘC dùng (phân bổ xen kẽ, đủ các loại đã chọn): {types_text}.
+- multiple_choice: 4 lựa chọn A–D, correct_answer khớp 1 option.
+- true_false: options ["Đúng","Sai"], correct_answer là Đúng hoặc Sai.
+- fill_blank: không cần options, correct_answer là từ/cụm cần điền.
+- essay: không options; sample_answer là ý chính để giáo viên chấm; points 2–3.
+{lang_rule}
+{req}
+Nội dung sát chủ đề, thực tế Việt Nam, phù hợp học sinh {grade}.
 Chỉ trả về JSON.
 """
     text, source = _call_ai(
@@ -383,20 +467,25 @@ Chỉ trả về JSON.
     )
     data = _parse_json(text) if text else None
     if not data or not data.get("questions"):
-        return _fallback_quiz(grade, subject, topic, num_questions)
+        return _fallback_quiz(grade, subject, topic, num_questions, types, language)
     from app.routes.quizzes import normalize_quiz_questions
     data["questions"] = normalize_quiz_questions(data.get("questions"))
     if not data["questions"]:
-        return _fallback_quiz(grade, subject, topic, num_questions)
+        return _fallback_quiz(grade, subject, topic, num_questions, types, language)
     data["source"] = source or "ai"
     data.setdefault("grade", grade)
     data.setdefault("subject", subject)
     data.setdefault("topic", topic)
+    data.setdefault("description", description)
+    data["language"] = language
+    data["quiz_types"] = types
+    data["theme_color"] = theme_color
+    data["theme_accent"] = theme_accent
     data.pop("note", None)
     return data
 
 
-def _normalize_pptx_slides(slides: list, topic: str) -> list[dict]:
+def _normalize_pptx_slides(slides: list, topic: str, language: str = "vi") -> list[dict]:
     layouts_ok = {"title", "content", "two_column", "table", "cards", "closing"}
     normalized = []
     total = len(slides)
@@ -440,9 +529,8 @@ def _normalize_pptx_slides(slides: list, topic: str) -> list[dict]:
         if not bullets and not left and not table and layout not in ("title", "closing"):
             bullets = ["Key idea", "Example", "Class activity"]
 
-        # Strip Vietnamese leftovers from titles if mixed with " / "
         title = str(s.get("title") or topic)
-        if " / " in title:
+        if language == "en" and " / " in title:
             title = title.split(" / ")[0].strip()
         title = title[:110]
 
@@ -496,6 +584,11 @@ def generate_pptx_draft(
     topic: str,
     slide_count: int = 12,
     lesson_context: dict | None = None,
+    language: str = "vi",
+    description: str = "",
+    extra_requirements: str = "",
+    theme_color: str = "#0F2744",
+    theme_accent: str = "#F39C4A",
 ) -> dict:
     slide_count = max(6, min(int(slide_count or 12), 16))
     context_hint = ""
@@ -528,17 +621,23 @@ def generate_pptx_draft(
             + json.dumps(brief, ensure_ascii=False)[:3500]
         )
         follow_lesson = (
-            "- Map slides to lesson sections in order (warm-up → main → activity → practice → reflection).\n"
+            "- Map slides to lesson sections in order (khởi động → kiến thức → hoạt động → luyện tập → phản ánh).\n"
             "- Include one slide for objectives and one vocabulary/table slide from the lesson.\n"
-            "- Reuse key points from section content; expand into clear English teaching bullets.\n"
+            "- Reuse key points from section content; keep the requested language.\n"
         )
 
+    req = _brief_requirements(description, extra_requirements)
+    lang_rule = {
+        "vi": "TOÀN BỘ chữ trên slide bằng tiếng Việt (title, bullets, table, notes). image_keyword viết tiếng Anh để tìm ảnh.",
+        "en": "ALL slide text in English. image_keyword in English.",
+        "bilingual": "Title tiếng Việt; bullets tiếng Việt, có thể kèm thuật ngữ English trong ngoặc. image_keyword tiếng Anh.",
+    }.get(language, "Chữ trên slide bằng tiếng Việt. image_keyword tiếng Anh.")
     system_en = (
-        "You are an instructional designer creating polished English-only classroom PowerPoint decks "
-        "for Vietnamese secondary schools (Experiential Learning). "
+        "You are an instructional designer creating classroom PowerPoint decks "
+        "for Vietnamese secondary schools (Hoạt động trải nghiệm). "
         "When a lesson plan is provided, the slides MUST follow that plan closely. "
-        "All slide text MUST be English only — no Vietnamese. "
-        "image_keyword must describe a real photo matching the slide content. "
+        "Prefer Vietnamese school / Vietnam imagery (cờ đỏ sao vàng, học sinh Việt Nam, sân trường). "
+        "image_keyword must describe a real photo matching the slide content, Vietnam-first. "
         "Return valid JSON only."
     )
 
@@ -548,13 +647,13 @@ def generate_pptx_draft(
         )
 
     prompt = f"""
-Create an English-only PowerPoint outline as JSON:
+Tạo dàn ý PowerPoint JSON:
 {{
   "title": "...",
   "grade": "{grade}",
   "subject": "{subject}",
   "topic": "{topic}",
-  "language": "en",
+  "language": "{language}",
   "slides": [
     {{
       "layout": "title|content|two_column|table|cards|closing",
@@ -566,24 +665,28 @@ Create an English-only PowerPoint outline as JSON:
       "left_bullets": ["..."],
       "right_bullets": ["..."],
       "table": {{"headers": ["A","B","C"], "rows": [["1","2","3"]]}},
-      "image_keyword": "concrete English nouns for a related photo",
-      "notes": "presenter notes in English"
+      "image_keyword": "concrete English nouns + Vietnam for a related photo",
+      "notes": "presenter notes"
     }}
   ]
 }}
 
 Rules:
 - Exactly {slide_count} slides.
-- ALL text in English (titles, bullets, table cells, notes).
+- {lang_rule}
 - Slide 1 layout=title; last slide layout=closing.
 - Include at least one layout=table, one layout=two_column, and one layout=cards.
-- Content slides: 5–6 bullets, each 12–22 words.
-- two_column: 4–5 bullets per side.
-- cards: 3–4 cards, 15–30 words each.
-- table: 4–6 meaningful rows.
-{follow_lesson}- image_keyword MUST match THAT slide (e.g. flag ceremony → "vietnam school flag raising ceremony students";
-  lining up → "students lining up schoolyard"; national anthem → "students singing national anthem").
+- Content slides: 4–6 bullets, mỗi bullet 8–20 từ.
+- two_column: 4 bullets mỗi cột.
+- cards: 3–4 cards.
+- table: 4–6 hàng sát nội dung.
+{follow_lesson}- image_keyword MUST match THAT slide, ưu tiên Việt Nam
+  (chào cờ → "vietnam school flag raising ceremony students red flag yellow star";
+  sân trường → "vietnamese students lining up schoolyard";
+  quốc ca → "students singing vietnam national anthem").
 - Never use generic keywords like "background", "abstract", or "education" alone.
+- Màu chủ đạo giáo viên chọn: {theme_color}, nhấn {theme_accent} (ghi vào notes nếu cần).
+- {req}
 Grade: {grade}; Subject: {subject}; Topic: {topic}.
 {context_hint}
 """
@@ -593,9 +696,11 @@ Grade: {grade}; Subject: {subject}; Topic: {topic}.
 
     if not data or not isinstance(slides, list) or len(slides) < 4:
         retry_prompt = f"""
-Return English-only PowerPoint JSON with {slide_count} slides for topic "{topic}".
+Return PowerPoint JSON with {slide_count} slides for topic "{topic}".
+Language: {language}. {lang_rule}
 Follow the lesson plan if provided. Layouts: title, content, two_column, table, cards, closing.
-Concrete image_keyword per slide. No Vietnamese. Valid JSON only.
+Vietnam-first image_keyword per slide. Valid JSON only.
+{req}
 {context_hint[:1500]}
 """
         text2, source2 = _ask(retry_prompt)
@@ -604,15 +709,18 @@ Concrete image_keyword per slide. No Vietnamese. Valid JSON only.
             data, source, slides = data2, source2 or source, data2["slides"]
 
     if not data or not isinstance(slides, list) or len(slides) < 4:
-        return _fallback_slides(grade, subject, topic, slide_count)
+        return _fallback_slides(grade, subject, topic, slide_count, language)
 
-    normalized = _normalize_pptx_slides(slides, topic)
+    normalized = _normalize_pptx_slides(slides, topic, language)
     normalized = _enrich_image_keywords(normalized, topic)
     if len(normalized) < 4:
-        return _fallback_slides(grade, subject, topic, slide_count)
+        return _fallback_slides(grade, subject, topic, slide_count, language)
     data["slides"] = normalized
     data["source"] = source or "ai"
-    data["language"] = "en"
+    data["language"] = language
+    data["theme_color"] = theme_color
+    data["theme_accent"] = theme_accent
+    data["description"] = description
     data["based_on_lesson"] = bool(lesson_context)
     data.setdefault("grade", grade)
     data.setdefault("subject", subject)
@@ -632,32 +740,5 @@ def build_pptx_bytes(deck: dict) -> bytes:
 
 
 def quiz_to_docx_bytes(quiz: dict) -> bytes:
-    from docx import Document
-    from docx.enum.text import WD_ALIGN_PARAGRAPH
-
-    doc = Document()
-    doc.add_heading(quiz.get("title") or "Đề kiểm tra", level=0).alignment = WD_ALIGN_PARAGRAPH.CENTER
-    doc.add_paragraph(
-        f"Lớp: {quiz.get('grade', '')} | Môn: {quiz.get('subject', '')} | "
-        f"Chủ đề: {quiz.get('topic', '')} | Thời gian: {quiz.get('time_limit_minutes', 20)} phút"
-    )
-
-    for i, q in enumerate(quiz.get("questions") or [], 1):
-        doc.add_heading(f"Câu {i}", level=2)
-        doc.add_paragraph(q.get("question_text") or "")
-        for opt in q.get("options") or []:
-            doc.add_paragraph(str(opt), style="List Bullet")
-
-    doc.add_page_break()
-    doc.add_heading("Đáp án", level=1)
-    for i, q in enumerate(quiz.get("questions") or [], 1):
-        ans = q.get("correct_answer") or "—"
-        exp = q.get("explanation") or ""
-        line = f"Câu {i}: {ans}"
-        if exp:
-            line += f" ({exp})"
-        doc.add_paragraph(line)
-
-    buf = io.BytesIO()
-    doc.save(buf)
-    return buf.getvalue()
+    from app.services.docx_builder import build_quiz_docx_bytes
+    return build_quiz_docx_bytes(quiz)

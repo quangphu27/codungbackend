@@ -22,14 +22,46 @@ def _safe_download_name(raw: str, fallback: str, ext: str) -> str:
     return text[:80]
 
 
+def _quiz_types(data: dict) -> list:
+    raw = data.get("quiz_types") or data.get("question_types") or []
+    if isinstance(raw, str):
+        raw = [x.strip() for x in raw.replace(";", ",").split(",") if x.strip()]
+    allowed = {"multiple_choice", "true_false", "fill_blank", "essay"}
+    alias = {
+        "mcq": "multiple_choice",
+        "trac nghiem": "multiple_choice",
+        "trắc nghiệm": "multiple_choice",
+        "dung sai": "true_false",
+        "đúng/sai": "true_false",
+        "true_false": "true_false",
+        "dien khuyet": "fill_blank",
+        "điền khuyết": "fill_blank",
+        "tu luan": "essay",
+        "tự luận": "essay",
+        "short_answer": "essay",
+    }
+    out = []
+    for item in raw:
+        key = str(item).strip().lower()
+        mapped = alias.get(key, key.replace(" ", "_"))
+        if mapped in allowed and mapped not in out:
+            out.append(mapped)
+    return out or ["multiple_choice"]
+
+
 def _base_payload():
     data = request.get_json() or {}
     return {
         "grade": (data.get("grade") or "Lớp 6").strip(),
-        "subject": (data.get("subject") or "Experiential Learning").strip(),
+        "subject": (data.get("subject") or "Hoạt động trải nghiệm").strip(),
         "topic": (data.get("topic") or "").strip(),
+        "description": (data.get("description") or data.get("mo_ta") or "").strip(),
         "language": data.get("language") or "bilingual",
         "extra_requirements": data.get("extra_requirements") or data.get("requirements") or "",
+        "theme_color": (data.get("theme_color") or data.get("primary_color") or "#0F2744").strip(),
+        "theme_accent": (data.get("theme_accent") or data.get("accent_color") or "#F39C4A").strip(),
+        "quiz_types": _quiz_types(data),
+        "quiz_requirements": (data.get("quiz_requirements") or "").strip(),
         "num_questions": data.get("num_questions", 8),
         "difficulty": data.get("difficulty") or "mixed",
         "slide_count": data.get("slide_count", 12),
@@ -87,6 +119,9 @@ def generate_lesson():
         topic=payload["topic"],
         language=payload["language"],
         extra_requirements=payload["extra_requirements"],
+        description=payload["description"],
+        theme_color=payload["theme_color"],
+        theme_accent=payload["theme_accent"],
     )
 
     draft = None
@@ -112,6 +147,13 @@ def generate_quiz():
         topic=payload["topic"],
         num_questions=payload["num_questions"],
         difficulty=payload["difficulty"],
+        language=payload["language"],
+        description=payload["description"],
+        extra_requirements=payload["extra_requirements"],
+        quiz_types=payload["quiz_types"],
+        quiz_requirements=payload["quiz_requirements"],
+        theme_color=payload["theme_color"],
+        theme_accent=payload["theme_accent"],
     )
 
     draft = None
@@ -137,6 +179,11 @@ def generate_pptx():
         topic=payload["topic"],
         slide_count=payload["slide_count"],
         lesson_context=payload.get("lesson"),
+        language=payload["language"],
+        description=payload["description"],
+        extra_requirements=payload["extra_requirements"],
+        theme_color=payload["theme_color"],
+        theme_accent=payload["theme_accent"],
     )
 
     draft = None
@@ -250,10 +297,15 @@ def attach_ai_quiz():
         topic = (data.get("topic") or lesson.get("title") or "Bài kiểm tra").strip()
         quiz_draft = studio_service.generate_quiz_draft(
             grade=(data.get("grade") or "Lớp 10").strip(),
-            subject=(data.get("subject") or "Experiential Learning").strip(),
+            subject=(data.get("subject") or "Hoạt động trải nghiệm").strip(),
             topic=topic,
             num_questions=int(data.get("num_questions") or 8),
             difficulty=data.get("difficulty") or "mixed",
+            language=data.get("language") or "bilingual",
+            description=(data.get("description") or "").strip(),
+            extra_requirements=data.get("extra_requirements") or "",
+            quiz_types=_quiz_types(data),
+            quiz_requirements=(data.get("quiz_requirements") or "").strip(),
         )
 
     from app.routes.quizzes import _replace_lesson_quiz
@@ -272,8 +324,92 @@ def attach_ai_quiz():
     if err:
         return jsonify({"message": err[0]}), err[1]
 
+    quiz_id = quiz_data.get("id")
     return jsonify({
         "message": "Đã gắn đề AI vào bước Kiểm tra của bài học",
         "quiz": quiz_data,
         "draft": quiz_draft,
+        "student_path": f"/quiz/{quiz_id}" if quiz_id else None,
+        "grade_path": f"/teacher/quizzes/{quiz_id}" if quiz_id else None,
+    }), 201
+
+
+@studio_bp.route("/publish-quiz", methods=["POST"])
+@jwt_required()
+@teacher_required
+def publish_quiz():
+    """Xuất đề Studio thành đề học sinh làm được (có link gửi / xem / chấm)."""
+    payload = _base_payload()
+    quiz_draft = payload.get("quiz")
+    if not quiz_draft:
+        if not payload["topic"]:
+            return jsonify({"message": "Thiếu đề hoặc chủ đề"}), 400
+        quiz_draft = studio_service.generate_quiz_draft(
+            grade=payload["grade"],
+            subject=payload["subject"],
+            topic=payload["topic"],
+            num_questions=payload["num_questions"],
+            difficulty=payload["difficulty"],
+            language=payload["language"],
+            description=payload["description"],
+            extra_requirements=payload["extra_requirements"],
+            quiz_types=payload["quiz_types"],
+            quiz_requirements=payload["quiz_requirements"],
+            theme_color=payload["theme_color"],
+            theme_accent=payload["theme_accent"],
+        )
+
+    from app.routes.quizzes import normalize_quiz_questions
+
+    questions = normalize_quiz_questions(quiz_draft.get("questions") or [])
+    if not questions:
+        return jsonify({"message": "Đề chưa có câu hỏi hợp lệ"}), 400
+
+    db = get_db()
+    teacher_id = to_object_id(get_jwt_identity())
+    quiz = {
+        "title": quiz_draft.get("title") or f"Đề: {payload['topic']}",
+        "lesson_id": None,
+        "class_id": None,
+        "teacher_id": teacher_id,
+        "time_limit_minutes": int(quiz_draft.get("time_limit_minutes") or 20),
+        "randomize": True,
+        "max_attempts": 3,
+        "passing_score": int(quiz_draft.get("passing_score") or 60),
+        "hide_answers": True,
+        "standalone": True,
+        "share_enabled": True,
+        "grade": payload["grade"],
+        "subject": payload["subject"],
+        "topic": payload["topic"] or quiz_draft.get("topic"),
+        "description": payload["description"] or quiz_draft.get("description") or "",
+        "theme_color": payload["theme_color"],
+        "theme_accent": payload["theme_accent"],
+        "source": quiz_draft.get("source") or "ai",
+        "created_at": utc_now(),
+        "updated_at": utc_now(),
+    }
+    result = db.quizzes.insert_one(quiz)
+    quiz_id = result.inserted_id
+    for q in questions:
+        db.questions.insert_one({
+            "quiz_id": quiz_id,
+            "question_text": q.get("question_text", ""),
+            "question_type": q.get("question_type", "multiple_choice"),
+            "options": q.get("options", []),
+            "correct_answer": q.get("correct_answer"),
+            "points": int(q.get("points", 1)),
+            "explanation": q.get("explanation", ""),
+            "sample_answer": q.get("sample_answer") or "",
+        })
+
+    quiz["_id"] = quiz_id
+    quiz_data = serialize_doc(quiz)
+    quiz_data["questions_count"] = len(questions)
+    qid = str(quiz_id)
+    return jsonify({
+        "message": "Đã tạo đề cho học sinh. Gửi link làm bài, xem và chấm bên dưới.",
+        "quiz": quiz_data,
+        "student_path": f"/quiz/{qid}",
+        "grade_path": f"/teacher/quizzes/{qid}",
     }), 201

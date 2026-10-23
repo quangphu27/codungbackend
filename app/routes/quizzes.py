@@ -44,10 +44,24 @@ def grade_answer(question, answer):
     q_type = question.get("question_type")
     correct = question.get("correct_answer")
 
+    if q_type in ("essay", "short_answer"):
+        return None
     if q_type == "multiple_choice":
         return _mcq_match(answer, correct, question.get("options"))
     if q_type == "true_false":
-        return str(answer).lower() == str(correct).lower()
+        a = str(answer).strip().lower()
+        c = str(correct).strip().lower()
+        truthy = {"true", "đúng", "dung", "đung", "yes", "1"}
+        falsy = {"false", "sai", "no", "0"}
+        if a in truthy:
+            a = "true"
+        if a in falsy:
+            a = "false"
+        if c in truthy:
+            c = "true"
+        if c in falsy:
+            c = "false"
+        return a == c
     if q_type == "fill_blank":
         return str(answer).strip().lower() == str(correct).strip().lower()
     if q_type == "matching":
@@ -63,7 +77,26 @@ def normalize_quiz_questions(questions):
     for q in questions or []:
         if not isinstance(q, dict):
             continue
+        q_type = q.get("question_type") or "multiple_choice"
+        if q_type in ("short_answer", "open", "tu_luan"):
+            q_type = "essay"
+        if q_type == "essay":
+            text = str(q.get("question_text") or "").strip()
+            if not text:
+                continue
+            normalized.append({
+                "question_text": text,
+                "question_type": "essay",
+                "options": [],
+                "correct_answer": str(q.get("correct_answer") or q.get("sample_answer") or "").strip(),
+                "sample_answer": str(q.get("sample_answer") or q.get("correct_answer") or "").strip(),
+                "points": int(q.get("points") or 2),
+                "explanation": str(q.get("explanation") or ""),
+            })
+            continue
         opts = [str(o).strip() for o in (q.get("options") or []) if str(o).strip()]
+        if q_type == "true_false" and not opts:
+            opts = ["Đúng", "Sai"]
         correct = str(q.get("correct_answer") or "").strip()
         if opts and correct and correct not in opts:
             letter = correct[0].upper() if correct else ""
@@ -88,11 +121,12 @@ def normalize_quiz_questions(questions):
             correct = opts[0]
         normalized.append({
             "question_text": str(q.get("question_text") or "").strip(),
-            "question_type": q.get("question_type") or "multiple_choice",
-            "options": opts or ["A. Option 1", "B. Option 2", "C. Option 3", "D. Option 4"],
+            "question_type": q_type or "multiple_choice",
+            "options": opts or (["A. Option 1", "B. Option 2", "C. Option 3", "D. Option 4"] if q_type == "multiple_choice" else []),
             "correct_answer": correct,
             "points": int(q.get("points") or 1),
             "explanation": str(q.get("explanation") or ""),
+            "sample_answer": str(q.get("sample_answer") or ""),
         })
     return [q for q in normalized if q["question_text"]]
 
@@ -132,6 +166,8 @@ def get_quiz(quiz_id):
     if quiz.get("hide_answers") and not reveal_answers:
         for q in quiz_data["questions"]:
             q.pop("correct_answer", None)
+            q.pop("sample_answer", None)
+            q.pop("explanation", None)
     return jsonify(quiz_data)
 
 
@@ -166,6 +202,7 @@ def create_quiz():
             "correct_answer": q.get("correct_answer"),
             "points": int(q.get("points", 1)),
             "explanation": q.get("explanation", ""),
+            "sample_answer": q.get("sample_answer") or "",
         })
 
     quiz["_id"] = quiz_id
@@ -225,6 +262,7 @@ def _replace_lesson_quiz(db, lesson_id, teacher_id, data, role: str = "teacher")
             "correct_answer": q.get("correct_answer"),
             "points": int(q.get("points", 1)),
             "explanation": q.get("explanation", ""),
+            "sample_answer": q.get("sample_answer") or "",
         })
 
     quiz["_id"] = quiz_id
@@ -278,25 +316,37 @@ def submit_quiz(quiz_id):
     results = []
     total_points = 0
     earned_points = 0
+    pending_review = False
 
     for q in questions:
         qid = str(q["_id"])
         answer = answers.get(qid)
         is_correct = grade_answer(q, answer)
-        points = q.get("points", 1)
+        points = int(q.get("points", 1) or 1)
         total_points += points
-        if is_correct:
+        awarded = 0
+        needs_review = is_correct is None
+        if needs_review:
+            pending_review = True
+        elif is_correct:
+            awarded = points
             earned_points += points
         results.append({
             "question_id": qid,
+            "question_text": q.get("question_text"),
+            "question_type": q.get("question_type"),
             "answer": answer,
             "correct": is_correct,
+            "needs_review": needs_review,
+            "points": points,
+            "awarded_points": awarded,
             "correct_answer": q.get("correct_answer"),
+            "sample_answer": q.get("sample_answer") or "",
             "explanation": q.get("explanation"),
         })
 
     score = round((earned_points / total_points) * 100) if total_points else 0
-    passed = score >= quiz.get("passing_score", 60)
+    passed = (not pending_review) and score >= quiz.get("passing_score", 60)
 
     attempt = {
         "student_id": user_id,
@@ -304,7 +354,10 @@ def submit_quiz(quiz_id):
         "lesson_id": quiz.get("lesson_id"),
         "answers": results,
         "score": score,
+        "earned_points": earned_points,
+        "total_points": total_points,
         "passed": passed,
+        "pending_review": pending_review,
         "time_taken_seconds": data.get("time_taken_seconds", 0),
         "created_at": utc_now(),
     }
@@ -315,6 +368,7 @@ def submit_quiz(quiz_id):
         "attempt": serialize_doc(attempt),
         "score": score,
         "passed": passed,
+        "pending_review": pending_review,
         "results": results,
     })
 
@@ -322,12 +376,112 @@ def submit_quiz(quiz_id):
 @quizzes_bp.route("/<quiz_id>/attempts", methods=["GET"])
 @jwt_required()
 def get_attempts(quiz_id):
+    from flask_jwt_extended import get_jwt
+
     db = get_db()
     user_id = to_object_id(get_jwt_identity())
-    attempts = list(
-        db.attempts.find({
-            "quiz_id": to_object_id(quiz_id),
-            "student_id": user_id,
-        }).sort("created_at", -1)
+    role = get_jwt().get("role", "student")
+    quiz = db.quizzes.find_one({"_id": to_object_id(quiz_id)})
+    if not quiz:
+        return jsonify({"message": "Không tìm thấy bài kiểm tra"}), 404
+
+    is_owner = role in ("teacher", "super_admin") and (
+        role == "super_admin" or str(quiz.get("teacher_id")) == str(user_id)
     )
-    return jsonify(serialize_doc(attempts))
+    query = {"quiz_id": quiz["_id"]}
+    if not is_owner:
+        query["student_id"] = user_id
+    attempts = list(db.attempts.find(query).sort("created_at", -1))
+    if is_owner:
+        for a in attempts:
+            student = db.users.find_one(
+                {"_id": a.get("student_id")},
+                {"full_name": 1, "email": 1},
+            )
+            a["student"] = serialize_doc(student) if student else None
+    quiz_data = serialize_doc(quiz)
+    if not is_owner:
+        quiz_data.pop("hide_answers", None)
+    return jsonify({
+        "quiz": quiz_data,
+        "attempts": serialize_doc(attempts),
+        "is_owner": is_owner,
+    })
+
+
+@quizzes_bp.route("/<quiz_id>/attempts/<attempt_id>/grade", methods=["PUT"])
+@jwt_required()
+@teacher_required
+def grade_attempt(quiz_id, attempt_id):
+    from flask_jwt_extended import get_jwt
+
+    db = get_db()
+    teacher_id = to_object_id(get_jwt_identity())
+    role = get_jwt().get("role", "teacher")
+    quiz = db.quizzes.find_one({"_id": to_object_id(quiz_id)})
+    if not quiz:
+        return jsonify({"message": "Không tìm thấy bài kiểm tra"}), 404
+    if role != "super_admin" and str(quiz.get("teacher_id")) != str(teacher_id):
+        return jsonify({"message": "Không có quyền chấm đề này"}), 403
+
+    attempt = db.attempts.find_one({
+        "_id": to_object_id(attempt_id),
+        "quiz_id": quiz["_id"],
+    })
+    if not attempt:
+        return jsonify({"message": "Không tìm thấy bài làm"}), 404
+
+    data = request.get_json() or {}
+    grades = data.get("grades") or {}
+    comment = (data.get("comment") or "").strip()
+    answers = list(attempt.get("answers") or [])
+    earned = 0
+    total = 0
+    pending = False
+    for item in answers:
+        qid = str(item.get("question_id") or "")
+        points = int(item.get("points") or 1)
+        total += points
+        if qid in grades:
+            try:
+                awarded = max(0, min(points, int(grades[qid])))
+            except (TypeError, ValueError):
+                awarded = 0
+            item["awarded_points"] = awarded
+            item["needs_review"] = False
+            item["correct"] = awarded >= points
+            item["teacher_graded"] = True
+        if item.get("needs_review"):
+            pending = True
+        earned += int(item.get("awarded_points") or 0)
+
+    score = round((earned / total) * 100) if total else 0
+    passed = (not pending) and score >= quiz.get("passing_score", 60)
+    db.attempts.update_one(
+        {"_id": attempt["_id"]},
+        {"$set": {
+            "answers": answers,
+            "score": score,
+            "earned_points": earned,
+            "total_points": total,
+            "passed": passed,
+            "pending_review": pending,
+            "teacher_comment": comment,
+            "graded_at": utc_now(),
+            "graded_by": teacher_id,
+        }},
+    )
+    attempt.update({
+        "answers": answers,
+        "score": score,
+        "passed": passed,
+        "pending_review": pending,
+        "teacher_comment": comment,
+    })
+    return jsonify({
+        "message": "Đã lưu điểm chấm",
+        "attempt": serialize_doc(attempt),
+        "score": score,
+        "passed": passed,
+        "pending_review": pending,
+    })
