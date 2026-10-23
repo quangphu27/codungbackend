@@ -959,6 +959,7 @@ def generate_lesson_draft(
     description: str = "",
     theme_color: str = "#0F2744",
     theme_accent: str = "#F39C4A",
+    light: bool = False,
 ) -> dict:
     language = "bilingual"
     brief = _teacher_brief(
@@ -1017,13 +1018,24 @@ JSON giáo án song ngữ ngắn, đủ 4 phần, không cắt:
 Chủ đề "{topic}".
 """
     try:
-        data, source = _ask_studio_json(
-            prompt, SYSTEM_LESSON, max_tokens=4096, timeout=40, compact_prompt=compact,
-        )
+        if light:
+            data, source = _ask_studio_json(
+                compact, SYSTEM_LESSON, max_tokens=2048, timeout=30, compact_prompt=compact,
+            )
+        else:
+            data, source = _ask_studio_json(
+                prompt, SYSTEM_LESSON, max_tokens=4096, timeout=40, compact_prompt=compact,
+            )
         return _finish(data, source)
     except Exception:
         current_app.logger.exception("generate_lesson_draft failed")
-        return _finish(None, None)
+        try:
+            data, source = _ask_studio_json(
+                compact, SYSTEM_LESSON, max_tokens=2048, timeout=25, compact_prompt=compact,
+            )
+            return _finish(data, source)
+        except Exception:
+            return _finish(None, None)
 
 
 def _quiz_ai_fail_message() -> str:
@@ -1049,6 +1061,7 @@ def generate_quiz_draft(
     quiz_requirements: str = "",
     theme_color: str = "#0F2744",
     theme_accent: str = "#F39C4A",
+    light: bool = False,
 ) -> dict:
     language = "en"
     num_questions = max(3, min(int(num_questions or 10), 20))
@@ -1139,11 +1152,15 @@ Return JSON only.
 
     try:
         compact_quiz = (
-            prompt
-            + f"\nRETRY compact: return JSON with exactly {num_questions} complete questions. Short stems. Do not truncate."
+            f"{brief}\nJSON exam, {min(num_questions, 8)} short English questions, complete JSON, no truncate.\n"
+            '{"title":"...","questions":[{"question_text":"...","question_type":"multiple_choice","options":["A. ...","B. ...","C. ...","D. ..."],"correct_answer":"A. ...","points":1}]}'
         )
         data, source = _ask_studio_json(
-            prompt, system, max_tokens=4096, timeout=45, compact_prompt=compact_quiz,
+            compact_quiz if light else prompt,
+            system,
+            max_tokens=2048 if light else 4096,
+            timeout=30 if light else 40,
+            compact_prompt=compact_quiz,
         )
         if data and data.get("questions"):
             data["questions"] = _scrub_quiz_questions(
@@ -1152,23 +1169,21 @@ Return JSON only.
             )
         else:
             data = {"questions": []}
-        need = num_questions - len(data.get("questions") or [])
-        if need > 0:
-            more, src2 = _ask_studio_json(
-                f"""{brief}
-Write {need} MORE English exam questions on "{topic}" (do not repeat previous items).
-JSON: {{"questions":[{{"question_text":"...","question_type":"multiple_choice","options":["A. ...","B. ...","C. ...","D. ..."],"correct_answer":"A. ...","explanation":"...","points":1}}]}}
-Types: {types_text}. {_quiz_subject_rules(grade, subject, topic)}
-""",
-                system, max_tokens=2048, timeout=30,
-            )
-            if more and more.get("questions"):
-                extra = _scrub_quiz_questions(
-                    normalize_quiz_questions(more.get("questions")),
-                    grade, subject, topic, need,
-                )
-                data["questions"] = (data.get("questions") or []) + extra
-                source = source or src2
+        qs = data.get("questions") or []
+        if len(qs) < num_questions:
+            bank = _bank_quiz()
+            stems = {
+                str(q.get("question_text") or q.get("question") or "").strip().lower()
+                for q in qs
+            }
+            for extra in bank.get("questions") or []:
+                if len(qs) >= num_questions:
+                    break
+                stem = str(extra.get("question_text") or extra.get("question") or "").strip().lower()
+                if stem and stem not in stems:
+                    qs.append(extra)
+                    stems.add(stem)
+            data["questions"] = qs[:num_questions]
         if len(data.get("questions") or []) < max(3, min(num_questions, 4)):
             bank = _bank_quiz()
             have = data.get("questions") or []
@@ -1388,6 +1403,7 @@ def generate_pptx_draft(
     extra_requirements: str = "",
     theme_color: str = "#0F2744",
     theme_accent: str = "#F39C4A",
+    light: bool = False,
 ) -> dict:
     language = "en"
     slide_count = max(6, min(int(slide_count or 10), 20))
@@ -1519,13 +1535,17 @@ Rules:
     )
     try:
         data, source = _ask_studio_json(
-            prompt, system_en, max_tokens=3072, timeout=40, compact_prompt=compact_pptx,
+            compact_pptx if light else prompt,
+            system_en,
+            max_tokens=2048 if light else 3072,
+            timeout=30 if light else 40,
+            compact_prompt=compact_pptx,
         )
         slides = (data or {}).get("slides") if data else None
         if not isinstance(slides, list):
             slides = []
         rounds = 0
-        while len(slides) < slide_count and rounds < 3:
+        while (not light) and len(slides) < slide_count and rounds < 2:
             need = min(6, slide_count - len(slides))
             titles = [str(s.get("title") or "") for s in slides if isinstance(s, dict)]
             last_batch = len(slides) + need >= slide_count
@@ -1847,6 +1867,7 @@ def generate_eight_step_draft(
     extra_requirements: str = "",
     lesson_context: dict | None = None,
     quiz_context: dict | None = None,
+    light: bool = False,
 ) -> dict:
     brief = _teacher_brief(
         grade=grade, subject=subject, topic=topic, language="en",
@@ -1867,6 +1888,25 @@ def generate_eight_step_draft(
             prompt_text, system, max_tokens=3072, timeout=35,
         )
         return data
+
+    compact_eight = f"""
+{brief}
+Compact 8-step JSON: title, warm_up 3 MCQs, 4 vocabulary, short reading + 2 questions, matching 4 pairs, 4 quiz items.
+Topic "{topic}". Complete JSON, do not truncate.
+"""
+    if light:
+        try:
+            retry, src = _ask_studio_json(compact_eight, system, max_tokens=2048, timeout=30)
+            out = _normalize_eight_step(retry or {}, grade, subject, topic, description)
+            out["source"] = "gemini" if retry else "template"
+            out.pop("note", None)
+            return out
+        except Exception:
+            current_app.logger.exception("generate_eight_step_draft light failed")
+            out = _normalize_eight_step({}, grade, subject, topic, description)
+            out["source"] = "template"
+            out.pop("note", None)
+            return out
 
     try:
         part1 = _ask(f"""
@@ -1927,11 +1967,7 @@ FORBIDDEN: “Khái niệm nào liên quan đến {topic}?”, “Which sentence
             out.pop("note", None)
         else:
             retry, _src = _ask_studio_json(
-                f"""{brief}
-Compact 8-step JSON: title, warm_up 3 MCQs, 4 vocabulary, short reading + 2 questions, matching 4 pairs, 4 quiz items.
-Topic "{topic}". Complete JSON, do not truncate.
-""",
-                system, max_tokens=2048, timeout=30,
+                compact_eight, system, max_tokens=2048, timeout=30,
             )
             out = _normalize_eight_step(retry or {}, grade, subject, topic, description)
             if retry:
@@ -1943,10 +1979,17 @@ Topic "{topic}". Complete JSON, do not truncate.
         return out
     except Exception:
         current_app.logger.exception("generate_eight_step_draft failed")
-        out = _normalize_eight_step({}, grade, subject, topic, description)
-        out["source"] = "template"
-        out.pop("note", None)
-        return out
+        try:
+            retry, src = _ask_studio_json(compact_eight, system, max_tokens=2048, timeout=25)
+            out = _normalize_eight_step(retry or {}, grade, subject, topic, description)
+            out["source"] = "gemini" if retry else "template"
+            out.pop("note", None)
+            return out
+        except Exception:
+            out = _normalize_eight_step({}, grade, subject, topic, description)
+            out["source"] = "template"
+            out.pop("note", None)
+            return out
 
 
 def build_docx_bytes(lesson: dict) -> bytes:

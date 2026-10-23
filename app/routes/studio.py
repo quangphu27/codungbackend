@@ -84,7 +84,23 @@ def _base_payload():
         "quiz": data.get("quiz") if isinstance(data.get("quiz"), dict) else None,
         "deck": data.get("deck") if isinstance(data.get("deck"), dict) else None,
         "save": bool(data.get("save", True)),
+        "light": bool(data.get("light")),
     }
+
+
+def _call_or_light(payload: dict, make, fallback):
+    light = bool(payload.get("light"))
+    try:
+        return make(light)
+    except Exception:
+        from flask import current_app
+        current_app.logger.exception("studio generate failed")
+        if not light:
+            try:
+                return make(True)
+            except Exception:
+                current_app.logger.exception("studio generate light retry failed")
+        return fallback()
 
 
 def _save_draft(db, user_id, kind: str, payload: dict, result: dict):
@@ -128,8 +144,8 @@ def generate_lesson():
     if not payload["topic"]:
         return jsonify({"message": "Vui lòng nhập chủ đề"}), 400
 
-    try:
-        lesson = studio_service.generate_lesson_draft(
+    def _make_lesson(light):
+        return studio_service.generate_lesson_draft(
             grade=payload["grade"],
             subject=payload["subject"],
             topic=payload["topic"],
@@ -138,10 +154,10 @@ def generate_lesson():
             description=payload["description"],
             theme_color=payload["theme_color"],
             theme_accent=payload["theme_accent"],
+            light=light,
         )
-    except Exception:
-        from flask import current_app
-        current_app.logger.exception("POST /studio/generate/lesson")
+
+    def _fallback_lesson():
         lesson = studio_service._fallback_lesson(
             payload["grade"], payload["subject"], payload["topic"],
             "bilingual", payload["description"],
@@ -150,6 +166,9 @@ def generate_lesson():
         lesson.pop("note", None)
         lesson["theme_color"] = payload["theme_color"]
         lesson["theme_accent"] = payload["theme_accent"]
+        return lesson
+
+    lesson = _call_or_light(payload, _make_lesson, _fallback_lesson)
 
     draft = None
     if payload["save"]:
@@ -173,8 +192,8 @@ def generate_quiz():
     if not payload["topic"]:
         return jsonify({"message": "Vui lòng nhập chủ đề"}), 400
 
-    try:
-        quiz = studio_service.generate_quiz_draft(
+    def _make_quiz(light):
+        return studio_service.generate_quiz_draft(
             grade=payload["grade"],
             subject=payload["subject"],
             topic=payload["topic"],
@@ -187,13 +206,21 @@ def generate_quiz():
             quiz_requirements=payload["quiz_requirements"],
             theme_color=payload["theme_color"],
             theme_accent=payload["theme_accent"],
+            light=light,
         )
-    except studio_service.StudioGenerateError as exc:
-        return jsonify({"message": str(exc)}), 502
-    except Exception:
-        from flask import current_app
-        current_app.logger.exception("POST /studio/generate/quiz")
-        return jsonify({"message": "Không tạo được đề. Thử lại sau ít phút."}), 502
+
+    def _fallback_quiz():
+        quiz = studio_service._fallback_quiz(
+            payload["grade"], payload["subject"], payload["topic"],
+            payload["num_questions"], payload["quiz_types"], "en",
+        )
+        quiz["source"] = "practice"
+        quiz.pop("note", None)
+        quiz["theme_color"] = payload["theme_color"]
+        quiz["theme_accent"] = payload["theme_accent"]
+        return quiz
+
+    quiz = _call_or_light(payload, _make_quiz, _fallback_quiz)
 
     draft = None
     if payload["save"]:
@@ -217,8 +244,8 @@ def generate_pptx():
     if not payload["topic"]:
         return jsonify({"message": "Vui lòng nhập chủ đề"}), 400
 
-    try:
-        deck = studio_service.generate_pptx_draft(
+    def _make_pptx(light):
+        return studio_service.generate_pptx_draft(
             grade=payload["grade"],
             subject=payload["subject"],
             topic=payload["topic"],
@@ -229,11 +256,21 @@ def generate_pptx():
             extra_requirements=payload["extra_requirements"],
             theme_color=payload["theme_color"],
             theme_accent=payload["theme_accent"],
+            light=light,
         )
-    except Exception:
-        from flask import current_app
-        current_app.logger.exception("POST /studio/generate/pptx")
-        return jsonify({"message": "Không tạo được PowerPoint. Thử lại sau ít phút."}), 502
+
+    def _fallback_pptx():
+        deck = studio_service._fallback_slides(
+            payload["grade"], payload["subject"], payload["topic"],
+            payload["slide_count"], "en",
+        )
+        deck["theme_color"] = payload["theme_color"]
+        deck["theme_accent"] = payload["theme_accent"]
+        deck["description"] = payload["description"]
+        deck.pop("note", None)
+        return deck
+
+    deck = _call_or_light(payload, _make_pptx, _fallback_pptx)
 
     draft = None
     if payload["save"]:
@@ -256,8 +293,8 @@ def generate_eight_step():
     payload = _base_payload()
     if not payload["topic"]:
         return jsonify({"message": "Vui lòng nhập chủ đề"}), 400
-    try:
-        eight = studio_service.generate_eight_step_draft(
+    def _make_eight(light):
+        return studio_service.generate_eight_step_draft(
             grade=payload["grade"],
             subject=payload["subject"],
             topic=payload["topic"],
@@ -265,15 +302,18 @@ def generate_eight_step():
             extra_requirements=payload["extra_requirements"],
             lesson_context=payload.get("lesson"),
             quiz_context=payload.get("quiz"),
+            light=light,
         )
-    except Exception:
-        from flask import current_app
-        current_app.logger.exception("POST /studio/generate/eight-step")
+
+    def _fallback_eight():
         eight = studio_service._normalize_eight_step(
             {}, payload["grade"], payload["subject"], payload["topic"], payload["description"],
         )
         eight["source"] = "template"
         eight.pop("note", None)
+        return eight
+
+    eight = _call_or_light(payload, _make_eight, _fallback_eight)
     draft = None
     if payload["save"]:
         try:
