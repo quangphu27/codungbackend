@@ -14,6 +14,22 @@ from flask import current_app
 from app.services.ai_service import _call_ai
 
 
+class StudioGenerateError(Exception):
+    """AI không tạo được học liệu — không dùng bản mẫu tạm."""
+
+
+SYSTEM_MATH_EXAM = (
+    "You are a Vietnam high-school mathematics examiner (GDPT 2018). "
+    "Write a real exam: every item must require computing a derivative, integral, limit, or solving an equation. "
+    "Options must be distinct formulas or numbers (include typical student mistakes). "
+    "FORBIDDEN question stems: 'which concept relates to', 'khái niệm nào liên quan', "
+    "'correct content about the topic', 'nội dung đúng về'. "
+    "FORBIDDEN options: 'unrelated concept', 'incorrect information', 'none of the above', "
+    "'khái niệm không liên quan', 'thông tin sai', 'không có đáp án'. "
+    "Student paper in ENGLISH. JSON only."
+)
+
+
 SYSTEM_TEACHER = (
     "Bạn là chuyên gia cao cấp biên soạn giáo án, đề kiểm tra và học liệu Hoạt động trải nghiệm "
     "theo Chương trình GDPT 2018 Việt Nam. "
@@ -22,6 +38,111 @@ SYSTEM_TEACHER = (
     "Viết nội dung DÀI, chuẩn sư phạm, có tình huống thật ở trường Việt Nam, lời giáo viên và câu hỏi gợi ý. "
     "Trả về đúng JSON, không markdown."
 )
+
+
+def _subject_blob(subject: str, topic: str) -> str:
+    return f"{subject or ''} {topic or ''}".lower()
+
+
+def _is_math_topic(subject: str = "", topic: str = "") -> bool:
+    blob = _subject_blob(subject, topic)
+    keys = (
+        "toán", "toan", "math", "đạo hàm", "dao ham", "derivative",
+        "tích phân", "tich phan", "integral", "nguyên hàm", "nguyen ham",
+        "hình học", "hinh hoc", "đại số", "dai so", "giải tích", "giai tich",
+        "phương trình", "phuong trinh", "bất phương trình", "logarit", "logarithm",
+        "mũ", "lượng giác", "luong giac", "vector", "xác suất", "xac suat",
+        "tổ hợp", "to hop", "hàm số", "ham so", "giới hạn", "gioi han",
+        "calculus", "algebra", "geometry", "trigonometry",
+    )
+    return any(k in blob for k in keys)
+
+
+def _quiz_subject_rules(grade: str, subject: str, topic: str) -> str:
+    if _is_math_topic(subject, topic):
+        return f"""
+CONTENT RULES — MATHEMATICS ({grade} · {subject} · {topic}):
+- At least 70% of items REQUIRE actual calculation (compute, differentiate, integrate, evaluate, solve).
+- Use concrete functions and numbers at {grade} level, exactly about “{topic}”. Example style:
+  “Let f(x) = x^3 - 3x^2 + 2. Find f'(x).” with options like 3x^2-6x, 3x^2-3x, x^2-6x, 3x-6.
+- Distractors = common student mistakes (forgot chain rule, wrong sign, dropped coefficient).
+- fill_blank: the computed result (e.g. 2x, 6, 1/2).
+- essay: “Show the steps to compute …” with a marking key of the main steps + final answer.
+- At most 1–2 conceptual items (definition/property). NEVER write generic “what is the meaning of {topic}?”.
+- Write formulas in plain text: f(x)=..., f'(x)=..., ∫, ^ for powers.
+- FORBIDDEN (reject these): “Khái niệm nào liên quan đến {topic}?”, “Which concept relates to {topic}?”,
+  options “Nội dung đúng về {topic} / Khái niệm không liên quan / Thông tin sai / Không có đáp án”.
+- Each MCQ option must itself be a formula or a number, not a comment about the topic.
+"""
+    blob = _subject_blob(subject, topic)
+    if any(k in blob for k in ("khoa học", "khoa hoc", "science", "vật lý", "vat ly", "hóa", "hoa hoc", "sinh", "physics", "chemistry", "biology")):
+        return f"""
+CONTENT RULES — SCIENCE ({grade} · {topic}):
+- Items must use formulas, units, numbers or experimental situations of THIS topic.
+- Include calculation / apply-the-formula questions, not only definitions.
+- Distractors are plausible wrong units or wrong substitutions.
+"""
+    return f"""
+CONTENT RULES — THIS TOPIC ONLY ({grade} · {subject} · {topic}):
+- Every item must be unusable if the topic is changed (names, facts, procedures of “{topic}”).
+- Ban generic prompts like “why is this useful” or “what is experiential learning” unless the topic is exactly that.
+- Use Vietnam school situations tied to {topic}.
+- FORBIDDEN stems/options: “which concept relates to”, “correct content about”, “unrelated concept”,
+  “incorrect information”, “none of the above”, and the Vietnamese equivalents
+  (“khái niệm nào liên quan”, “nội dung đúng về”, “không liên quan”, “thông tin sai”, “không có đáp án”).
+"""
+
+
+_GENERIC_Q_RE = re.compile(
+    r"(khái niệm nào|khai niem nao"
+    r"|which (idea|concept|sentence) best"
+    r"|nội dung đúng về|noi dung dung ve|a correct idea about|correct content about"
+    r"|khái niệm không liên quan|không liên quan|khong lien quan|unrelated (concept|idea)"
+    r"|thông tin sai|thong tin sai|incorrect information"
+    r"|không có đáp án|khong co dap an|none of the above"
+    r"|experiential activit|give one accurate fact)",
+    re.I,
+)
+_GENERIC_OPT_RE = re.compile(
+    r"(nội dung đúng|noi dung dung|không liên quan|khong lien quan"
+    r"|thông tin sai|thong tin sai|không có đáp án|khong co dap an"
+    r"|unrelated (concept|idea)|incorrect information|none of the above"
+    r"|a correct idea about|correct content about|experiential activity about)",
+    re.I,
+)
+
+
+def _is_generic_quiz_item(q: dict) -> bool:
+    if not isinstance(q, dict):
+        return True
+    text = str(q.get("question_text") or q.get("question") or "")
+    opts = [str(o) for o in (q.get("options") or [])]
+    blob = " ".join([text] + opts)
+    if _GENERIC_Q_RE.search(blob):
+        return True
+    if sum(1 for o in opts if _GENERIC_OPT_RE.search(o)) >= 2:
+        return True
+    return False
+
+
+def _scrub_quiz_questions(questions: list, grade: str, subject: str, topic: str, need: int) -> list:
+    kept = [q for q in (questions or []) if isinstance(q, dict) and not _is_generic_quiz_item(q)]
+    if len(kept) >= need:
+        return kept[:need]
+    if _is_math_topic(subject, topic):
+        extra = _fallback_math_questions(
+            topic, need, ["multiple_choice", "true_false", "fill_blank", "essay"],
+        )
+        seen = {(q.get("question_text") or "").strip().lower() for q in kept}
+        for q in extra:
+            key = (q.get("question_text") or "").strip().lower()
+            if key in seen:
+                continue
+            kept.append(q)
+            seen.add(key)
+            if len(kept) >= need:
+                break
+    return kept[:need]
 
 
 def _teacher_brief(
@@ -195,6 +316,290 @@ def _fallback_lesson(grade: str, subject: str, topic: str, language: str, descri
     }
 
 
+def _fallback_math_questions(topic: str, num_questions: int, types: list) -> list[dict]:
+    t = (topic or "").lower()
+    if any(k in t for k in ("tích phân", "tich phan", "integral", "nguyên hàm", "nguyen ham")):
+        bank = [
+            {
+                "question_text": "Compute ∫ 2x dx.",
+                "question_type": "multiple_choice",
+                "options": ["A. x^2 + C", "B. 2x^2 + C", "C. x + C", "D. 2 + C"],
+                "correct_answer": "A. x^2 + C",
+                "explanation": "The antiderivative of 2x is x^2 + C.",
+                "points": 1,
+            },
+            {
+                "question_text": "∫_0^1 3x^2 dx equals 1.",
+                "question_type": "true_false",
+                "options": ["True", "False"],
+                "correct_answer": "True",
+                "explanation": "[x^3]_0^1 = 1.",
+                "points": 1,
+            },
+            {
+                "question_text": "Fill the result: ∫ 6x dx = ______ + C",
+                "question_type": "fill_blank",
+                "options": [],
+                "correct_answer": "3x^2",
+                "explanation": "Coefficient 6 / 2 = 3.",
+                "points": 1,
+            },
+            {
+                "question_text": "Compute ∫_0^2 (3x^2 - 2x) dx. Show the steps and the final number.",
+                "question_type": "essay",
+                "options": [],
+                "correct_answer": "4",
+                "sample_answer": "Antiderivative x^3 - x^2. At 2: 8-4=4. At 0: 0. Result 4.",
+                "explanation": "Award method and the value 4.",
+                "points": 2,
+            },
+            {
+                "question_text": "The antiderivative of cos x is sin x + C.",
+                "question_type": "true_false",
+                "options": ["True", "False"],
+                "correct_answer": "True",
+                "explanation": "d/dx (sin x) = cos x.",
+                "points": 1,
+            },
+            {
+                "question_text": "Find ∫ (4x^3) dx.",
+                "question_type": "multiple_choice",
+                "options": ["A. x^4 + C", "B. 4x^4 + C", "C. 12x^2 + C", "D. x^3 + C"],
+                "correct_answer": "A. x^4 + C",
+                "explanation": "4 * x^4 / 4 = x^4 + C.",
+                "points": 1,
+            },
+        ]
+    else:
+        bank = [
+            {
+                "question_text": "Let f(x) = x^3 - 3x^2 + 2. Find f'(x).",
+                "question_type": "multiple_choice",
+                "options": ["A. 3x^2 - 6x", "B. 3x^2 - 3x", "C. x^2 - 6x", "D. 3x - 6"],
+                "correct_answer": "A. 3x^2 - 6x",
+                "explanation": "Power rule: 3x^2 - 6x.",
+                "points": 1,
+            },
+            {
+                "question_text": "If f(x) = e^x then f'(x) = e^x.",
+                "question_type": "true_false",
+                "options": ["True", "False"],
+                "correct_answer": "True",
+                "explanation": "The derivative of e^x is itself.",
+                "points": 1,
+            },
+            {
+                "question_text": "Fill: d/dx (x^2) = ______",
+                "question_type": "fill_blank",
+                "options": [],
+                "correct_answer": "2x",
+                "explanation": "Power rule.",
+                "points": 1,
+            },
+            {
+                "question_text": "Let f(x) = (2x + 1)^3. Find f'(x). Show the chain-rule steps.",
+                "question_type": "essay",
+                "options": [],
+                "correct_answer": "6(2x+1)^2",
+                "sample_answer": "u=2x+1, y=u^3, y'=3u^2 * 2 = 6(2x+1)^2.",
+                "explanation": "Award chain rule and the factor 6.",
+                "points": 2,
+            },
+            {
+                "question_text": "f(x) = sin x. What is f'(π/2)?",
+                "question_type": "multiple_choice",
+                "options": ["A. 0", "B. 1", "C. -1", "D. π/2"],
+                "correct_answer": "A. 0",
+                "explanation": "f'(x)=cos x, cos(π/2)=0.",
+                "points": 1,
+            },
+            {
+                "question_text": "The derivative of a constant function is 0.",
+                "question_type": "true_false",
+                "options": ["True", "False"],
+                "correct_answer": "True",
+                "explanation": "d/dx (c) = 0.",
+                "points": 1,
+            },
+            {
+                "question_text": "Let f(x) = 5x^4 - 2x. Find f'(x).",
+                "question_type": "multiple_choice",
+                "options": ["A. 20x^3 - 2", "B. 5x^3 - 2", "C. 20x^4 - 2", "D. 4x^3 - 2"],
+                "correct_answer": "A. 20x^3 - 2",
+                "explanation": "Power rule: 20x^3 - 2.",
+                "points": 1,
+            },
+            {
+                "question_text": "If y = ln x then y' = 1/x (for x > 0).",
+                "question_type": "true_false",
+                "options": ["True", "False"],
+                "correct_answer": "True",
+                "explanation": "Standard derivative of ln x.",
+                "points": 1,
+            },
+            {
+                "question_text": "Fill: d/dx (cos x) = ______",
+                "question_type": "fill_blank",
+                "options": [],
+                "correct_answer": "-sin x",
+                "explanation": "Derivative of cosine is -sine.",
+                "points": 1,
+            },
+            {
+                "question_text": "Let f(x) = x^2 + 4x. Find f'(1).",
+                "question_type": "multiple_choice",
+                "options": ["A. 6", "B. 5", "C. 2", "D. 8"],
+                "correct_answer": "A. 6",
+                "explanation": "f'(x)=2x+4, so f'(1)=6.",
+                "points": 1,
+            },
+            {
+                "question_text": "Compute the derivative of f(x) = (x^2 + 1)(x - 3) using the product rule. Give f'(x).",
+                "question_type": "essay",
+                "options": [],
+                "correct_answer": "3x^2 - 6x + 1",
+                "sample_answer": "u=x^2+1, v=x-3. u'=2x, v'=1. f'=2x(x-3)+(x^2+1)=3x^2-6x+1.",
+                "explanation": "Award product rule and simplified f'(x).",
+                "points": 2,
+            },
+            {
+                "question_text": "Let f(x) = x^3. Find f'(x).",
+                "question_type": "multiple_choice",
+                "options": ["A. 3x^2", "B. 3x", "C. x^2", "D. 3"],
+                "correct_answer": "A. 3x^2",
+                "explanation": "Power rule: 3x^2.",
+                "points": 1,
+            },
+            {
+                "question_text": "Let f(x) = 2x^3. Find f'(x).",
+                "question_type": "multiple_choice",
+                "options": ["A. 6x^2", "B. 2x^2", "C. 6x^3", "D. 3x^2"],
+                "correct_answer": "A. 6x^2",
+                "explanation": "2 * 3x^2 = 6x^2.",
+                "points": 1,
+            },
+            {
+                "question_text": "Let f(x) = 7x. Find f'(x).",
+                "question_type": "multiple_choice",
+                "options": ["A. 7", "B. 7x", "C. x", "D. 0"],
+                "correct_answer": "A. 7",
+                "explanation": "The derivative of cx is c.",
+                "points": 1,
+            },
+            {
+                "question_text": "Let f(x) = 1/x. Find f'(x).",
+                "question_type": "multiple_choice",
+                "options": ["A. -1/x^2", "B. 1/x^2", "C. ln x", "D. 1/x"],
+                "correct_answer": "A. -1/x^2",
+                "explanation": "x^{-1} differentiates to -x^{-2}.",
+                "points": 1,
+            },
+            {
+                "question_text": "Let f(x) = √x. Find f'(x).",
+                "question_type": "multiple_choice",
+                "options": ["A. 1/(2√x)", "B. √x / 2", "C. 2√x", "D. 1/√x"],
+                "correct_answer": "A. 1/(2√x)",
+                "explanation": "x^{1/2} → (1/2) x^{-1/2}.",
+                "points": 1,
+            },
+            {
+                "question_text": "Let f(x) = sin(3x). Find f'(x).",
+                "question_type": "multiple_choice",
+                "options": ["A. 3 cos(3x)", "B. cos(3x)", "C. 3 sin(3x)", "D. -3 cos(3x)"],
+                "correct_answer": "A. 3 cos(3x)",
+                "explanation": "Chain rule: cos(3x) * 3.",
+                "points": 1,
+            },
+            {
+                "question_text": "Let f(x) = e^{2x}. Find f'(x).",
+                "question_type": "multiple_choice",
+                "options": ["A. 2e^{2x}", "B. e^{2x}", "C. 2x e^{2x}", "D. e^x"],
+                "correct_answer": "A. 2e^{2x}",
+                "explanation": "Chain rule: e^{2x} * 2.",
+                "points": 1,
+            },
+            {
+                "question_text": "d/dx (tan x) = 1/cos^2 x.",
+                "question_type": "true_false",
+                "options": ["True", "False"],
+                "correct_answer": "True",
+                "explanation": "Equivalent to sec^2 x.",
+                "points": 1,
+            },
+            {
+                "question_text": "If f'(x) > 0 on an interval then f is increasing there.",
+                "question_type": "true_false",
+                "options": ["True", "False"],
+                "correct_answer": "True",
+                "explanation": "Sign of the first derivative.",
+                "points": 1,
+            },
+            {
+                "question_text": "Fill: d/dx (x^5) = ______",
+                "question_type": "fill_blank",
+                "options": [],
+                "correct_answer": "5x^4",
+                "explanation": "Power rule.",
+                "points": 1,
+            },
+            {
+                "question_text": "Let f(x) = 3x^2 - 4x + 1. Find f'(2).",
+                "question_type": "multiple_choice",
+                "options": ["A. 8", "B. 6", "C. 4", "D. 12"],
+                "correct_answer": "A. 8",
+                "explanation": "f'(x)=6x-4, f'(2)=8.",
+                "points": 1,
+            },
+            {
+                "question_text": "The slope of the tangent to y = x^2 at x = 1 is 2.",
+                "question_type": "true_false",
+                "options": ["True", "False"],
+                "correct_answer": "True",
+                "explanation": "y' = 2x, at x=1 the slope is 2.",
+                "points": 1,
+            },
+            {
+                "question_text": "Find the second derivative of f(x) = x^3.",
+                "question_type": "multiple_choice",
+                "options": ["A. 6x", "B. 3x^2", "C. 6", "D. x"],
+                "correct_answer": "A. 6x",
+                "explanation": "f'=3x^2, f''=6x.",
+                "points": 1,
+            },
+            {
+                "question_text": "Let f(x) = x sin x. Find f'(x) using the product rule. Show the steps.",
+                "question_type": "essay",
+                "options": [],
+                "correct_answer": "sin x + x cos x",
+                "sample_answer": "u=x, v=sin x. u'=1, v'=cos x. f'=sin x + x cos x.",
+                "explanation": "Award product rule and the expanded derivative.",
+                "points": 2,
+            },
+        ]
+    types = types or ["multiple_choice"]
+    out = []
+    used = set()
+    type_i = 0
+    for _ in range(num_questions * 4):
+        if len(out) >= num_questions:
+            break
+        want = types[type_i % len(types)]
+        type_i += 1
+        pool = [q for q in bank if q["question_type"] == want] or bank
+        picked = next((q for q in pool if q["question_text"] not in used), None)
+        if not picked:
+            continue
+        used.add(picked["question_text"])
+        out.append(dict(picked))
+    for q in bank:
+        if len(out) >= num_questions:
+            break
+        if q["question_text"] not in used:
+            used.add(q["question_text"])
+            out.append(dict(q))
+    return out[:num_questions]
+
+
 def _fallback_quiz(
     grade: str,
     subject: str,
@@ -204,6 +609,20 @@ def _fallback_quiz(
     language: str = "vi",
 ) -> dict:
     types = quiz_types or ["multiple_choice"]
+    if _is_math_topic(subject, topic):
+        questions = _fallback_math_questions(topic, num_questions, types)
+        return {
+            "title": f"Practice quiz: {topic}",
+            "grade": grade,
+            "subject": subject,
+            "topic": topic,
+            "language": language,
+            "passing_score": 60,
+            "time_limit_minutes": 20,
+            "questions": questions,
+            "source": "template",
+            "note": None,
+        }
     questions = []
     for i in range(1, num_questions + 1):
         qtype = types[(i - 1) % len(types)]
@@ -237,16 +656,16 @@ def _fallback_quiz(
             })
         else:
             questions.append({
-                "question_text": f"Question {i}: Which idea best relates to {topic}?",
+                "question_text": f"Question {i}: Give one accurate fact used when studying “{topic}” in {grade}.",
                 "question_type": "multiple_choice",
                 "options": [
-                    f"A. A correct idea about {topic}",
-                    "B. An unrelated concept",
-                    "C. Incorrect information",
-                    "D. None of the above",
+                    f"A. Apply the main rule of {topic} to a concrete example",
+                    f"B. Skip the given data about {topic}",
+                    "C. Use a formula from a different grade level",
+                    "D. Replace the unknown with any number",
                 ],
-                "correct_answer": f"A. A correct idea about {topic}",
-                "explanation": f"Option A best matches {topic}.",
+                "correct_answer": f"A. Apply the main rule of {topic} to a concrete example",
+                "explanation": f"Students must apply {topic} to a real example.",
                 "points": 1,
             })
     return {
@@ -259,7 +678,7 @@ def _fallback_quiz(
         "time_limit_minutes": 20,
         "questions": questions,
         "source": "template",
-        "note": "Temporary English quiz template. Add a Gemini API key for a fuller paper.",
+        "note": None,
     }
 
 
@@ -466,6 +885,16 @@ Chỉ trả JSON hợp lệ.
     return data
 
 
+def _quiz_ai_fail_message() -> str:
+    try:
+        from app.services.secret_store import gemini_is_configured
+        if not gemini_is_configured():
+            return "Chưa có API key Gemini. Admin hãy nhập key tại Cài đặt AI."
+    except Exception:
+        pass
+    return "AI không tạo được đề. Thử lại sau."
+
+
 def generate_quiz_draft(
     grade: str,
     subject: str,
@@ -498,52 +927,73 @@ def generate_quiz_draft(
         "STUDENT QUIZ IN ENGLISH ONLY. Write ALL titles, questions, options, sample answers and explanations in English. "
         "true_false options MUST be exactly [\"True\",\"False\"]. Do not use Vietnamese on the student paper."
     )
+    math_example = """
+  "questions": [
+    {
+      "question_text": "Let f(x) = x^3 - 3x^2 + 2. Find f'(x).",
+      "question_type": "multiple_choice",
+      "options": ["A. 3x^2 - 6x", "B. 3x^2 - 3x", "C. x^2 - 6x", "D. 3x - 6"],
+      "correct_answer": "A. 3x^2 - 6x",
+      "explanation": "Power rule: 3x^2 - 6x.",
+      "points": 1
+    }
+  ]""" if _is_math_topic(subject, topic) else """
+  "questions": [
+    {
+      "question_text": "A specific exam item about the given topic (not a meta-question).",
+      "question_type": "multiple_choice",
+      "options": ["A. Concrete answer 1", "B. Concrete answer 2", "C. Concrete answer 3", "D. Concrete answer 4"],
+      "correct_answer": "A. Concrete answer 1",
+      "explanation": "...",
+      "points": 1
+    }
+  ]"""
     prompt = f"""
 {brief}
 
-Tạo đề kiểm tra JSON — PHẢI đúng loại câu và yêu cầu giáo viên:
+This is a GRADED EXAM paper for {subject} / {topic} — NOT an ice-breaker, NOT experiential-learning filler.
+Write {num_questions} REAL questions. JSON only:
 {{
-  "title": "...",
-  "grade": "...",
-  "subject": "...",
-  "topic": "...",
+  "title": "Practice: {topic}",
+  "grade": "{grade}",
+  "subject": "{subject}",
+  "topic": "{topic}",
   "description": "{description}",
   "passing_score": 60,
-  "time_limit_minutes": 20,
-  "questions": [
-    {{
-      "question_text": "...",
-      "question_type": "multiple_choice|true_false|fill_blank|essay",
-      "options": ["A. ...", "B. ...", "C. ...", "D. ..."],
-      "correct_answer": "A. ... hoặc đáp án điền/Đúng-Sai",
-      "sample_answer": "gợi ý chấm tự luận (nếu essay)",
-      "explanation": "...",
-      "points": 1
-    }}
-  ]
+  "time_limit_minutes": 20,{math_example}
 }}
 
 Lớp: {grade}; Môn: {subject}; Chủ đề: {topic}.
 Số câu: {num_questions}; Độ khó: {difficulty}.
-Loại câu BẮT BUỘC dùng (phân bổ xen kẽ, đủ các loại đã chọn): {types_text}.
-- multiple_choice: 4 lựa chọn A–D, correct_answer khớp 1 option.
-- true_false: options ["True","False"], correct_answer is True or False.
-- fill_blank: no options; correct_answer is the missing English word/phrase.
-- essay: no options; sample_answer is the marking key in English; points 2–3.
+Loại câu BẮT BUỘC dùng (phân bổ xen kẽ): {types_text}.
+- multiple_choice: 4 lựa chọn A–D, each option is a real answer (formula/number/fact), correct_answer khớp 1 option.
+- true_false: options ["True","False"].
+- fill_blank: the computed missing result.
+- essay: “Show the steps…” with sample_answer; points 2–3.
+FORBIDDEN questions/options (do not write these at all):
+- “Khái niệm nào liên quan đến {topic}?” / “Which concept relates to {topic}?”
+- “Nội dung đúng về {topic}” / “Khái niệm không liên quan” / “Thông tin sai” / “Không có đáp án”
+- “A correct idea about {topic}” / “An unrelated concept” / “Incorrect information” / “None of the above”
 {lang_rule}
-Questions must follow the teacher brief, not generic. Suitable for grade {grade}, Vietnam school context, written in English.
+{_quiz_subject_rules(grade, subject, topic)}
 Return JSON only.
 """
+    system = SYSTEM_MATH_EXAM if _is_math_topic(subject, topic) else (
+        SYSTEM_TEACHER + " For this quiz, write a real exam. Never use placeholder/meta options."
+    )
     text, source = _call_ai(
-        prompt, SYSTEM_TEACHER, max_tokens=8192, json_mode=True, timeout=150,
+        prompt, system, max_tokens=8192, json_mode=True, timeout=150,
     )
     data = _parse_json(text) if text else None
     if not data or not data.get("questions"):
-        return _fallback_quiz(grade, subject, topic, num_questions, types, language)
+        raise StudioGenerateError(_quiz_ai_fail_message())
     from app.routes.quizzes import normalize_quiz_questions
-    data["questions"] = normalize_quiz_questions(data.get("questions"))
-    if not data["questions"]:
-        return _fallback_quiz(grade, subject, topic, num_questions, types, language)
+    data["questions"] = _scrub_quiz_questions(
+        normalize_quiz_questions(data.get("questions")),
+        grade, subject, topic, num_questions,
+    )
+    if len(data["questions"]) < max(3, min(num_questions, 4)):
+        raise StudioGenerateError("AI trả về câu hỏi chung chung. Hãy tạo lại đề.")
     data["source"] = source or "ai"
     data.setdefault("grade", grade)
     data.setdefault("subject", subject)
@@ -890,6 +1340,7 @@ def _normalize_subtitles(raw) -> list[dict]:
 
 
 normalize_subtitles = _normalize_subtitles
+scrub_quiz_questions = _scrub_quiz_questions
 
 
 def _mcq_items(raw, limit: int = 6) -> list[dict]:
@@ -901,6 +1352,8 @@ def _mcq_items(raw, limit: int = 6) -> list[dict]:
         if not text:
             continue
         opts = [str(o).strip() for o in (q.get("options") or []) if str(o).strip()][:4]
+        if _is_generic_quiz_item({"question_text": text, "options": opts}):
+            continue
         while len(opts) < 4:
             opts.append(f"Option {len(opts) + 1}")
         correct = str(q.get("correct_answer") or "").strip()
@@ -1013,36 +1466,11 @@ def _fallback_eight_step(grade: str, subject: str, topic: str, description: str 
             "title": f"Quiz: {topic}",
             "time_limit_minutes": 20,
             "passing_score": 60,
-            "questions": [
-                {
-                    "question_text": f"Which sentence best describes {topic}?",
-                    "question_type": "multiple_choice",
-                    "options": [
-                        f"A. An experiential activity about {topic}",
-                        "B. An unrelated idea",
-                        "C. Incorrect information",
-                        "D. None of the above",
-                    ],
-                    "correct_answer": f"A. An experiential activity about {topic}",
-                    "explanation": "Choose the option that matches the lesson topic.",
-                    "points": 1,
-                },
-                {
-                    "question_text": f"{topic} can help students practise English and life skills.",
-                    "question_type": "true_false",
-                    "options": ["True", "False"],
-                    "correct_answer": "True",
-                    "points": 1,
-                },
-                {
-                    "question_text": f"Write 4–6 sentences about why {topic} matters in your school.",
-                    "question_type": "essay",
-                    "options": [],
-                    "correct_answer": "Clear idea, example, and personal connection.",
-                    "sample_answer": "Students explain the activity, give an example, and say what they will do.",
-                    "points": 2,
-                },
-            ],
+            "questions": _fallback_quiz(
+                grade, subject, topic, 8,
+                ["multiple_choice", "true_false", "fill_blank", "essay"],
+                "en",
+            )["questions"],
         },
         "source": "template",
         "language": "en",
@@ -1082,7 +1510,14 @@ def _normalize_eight_step(data: dict, grade: str, subject: str, topic: str, desc
     if not activities:
         activities = fb["interactive"]["activities"]
     from app.routes.quizzes import normalize_quiz_questions
-    quiz_qs = normalize_quiz_questions(quiz.get("questions") or fb["quiz"]["questions"])
+    quiz_qs = _scrub_quiz_questions(
+        normalize_quiz_questions(quiz.get("questions") or []),
+        grade, subject, topic, 8,
+    )
+    if len(quiz_qs) < 4:
+        quiz_qs = _scrub_quiz_questions(
+            fb["quiz"]["questions"], grade, subject, topic, 8,
+        )
     out = {
         "title": str(data.get("title") or topic)[:160],
         "description": str(data.get("description") or description or fb["description"])[:800],
@@ -1110,7 +1545,7 @@ def _normalize_eight_step(data: dict, grade: str, subject: str, topic: str, desc
             "title": str(quiz.get("title") or f"Quiz: {topic}"),
             "time_limit_minutes": int(quiz.get("time_limit_minutes") or 20),
             "passing_score": int(quiz.get("passing_score") or 60),
-            "questions": quiz_qs or fb["quiz"]["questions"],
+            "questions": quiz_qs,
         },
         "source": data.get("source") or "ai",
         "language": "en",
@@ -1194,10 +1629,22 @@ Rules:
 - warm_up: 4 questions. reading: 4 questions. vocabulary: 8-10 words.
 - quiz: 6-8 questions in ENGLISH, mix multiple_choice + true_false + 1 essay. true_false options ["True","False"].
 - matching: 4-6 pairs.
+{_quiz_subject_rules(grade, subject, topic)}
+If mathematics: practice and quiz items MUST include calculations (derivatives/integrals/numbers), not only definitions.
+FORBIDDEN quiz stems/options: “Khái niệm nào liên quan đến {topic}?”, “Which sentence best describes {topic}?”,
+“Nội dung đúng về {topic} / Khái niệm không liên quan / Thông tin sai / Không có đáp án”.
 {context}
 """
+    system = SYSTEM_TEACHER
+    if _is_math_topic(subject, topic):
+        system = (
+            SYSTEM_MATH_EXAM
+            + " Output MUST still be the 8-step lesson JSON. "
+            "Warm-up/reading may introduce the idea; the quiz MUST be calculation items "
+            "with formula or number options. Never meta-questions."
+        )
     text, source = _call_ai(
-        prompt, SYSTEM_TEACHER, max_tokens=12288, json_mode=True, timeout=180,
+        prompt, system, max_tokens=12288, json_mode=True, timeout=180,
     )
     data = _parse_json(text) if text else None
     out = _normalize_eight_step(data or {}, grade, subject, topic, description)

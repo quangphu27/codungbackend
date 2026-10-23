@@ -1,7 +1,7 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 import random
-from app.extensions import get_db
+from app.extensions import get_db, limiter
 from app.utils.helpers import serialize_doc, utc_now, to_object_id
 from app.middlewares.auth import teacher_required
 
@@ -145,6 +145,91 @@ def normalize_quiz_questions(questions):
     return [q for q in normalized if q["question_text"]]
 
 
+def _guest_identity(data):
+    name = str((data or {}).get("student_name") or "").strip()
+    klass = str((data or {}).get("class_name") or "").strip()
+    if len(name) < 2:
+        return None, "Nhập họ và tên"
+    if len(name) > 80:
+        return None, "Họ và tên quá dài"
+    if len(klass) < 1:
+        return None, "Nhập lớp"
+    if len(klass) > 40:
+        return None, "Tên lớp quá dài"
+    return {
+        "student_name": name,
+        "class_name": klass,
+        "student_name_key": name.lower(),
+        "class_name_key": klass.lower(),
+    }, None
+
+
+def _questions_without_answers(questions):
+    out = []
+    for q in serialize_doc(questions) or []:
+        q.pop("correct_answer", None)
+        q.pop("sample_answer", None)
+        q.pop("explanation", None)
+        out.append(q)
+    return out
+
+
+def _score_submission(questions, answers, passing_score=60):
+    results = []
+    total_points = 0
+    earned_points = 0
+    pending_review = False
+    answers = answers or {}
+    for q in questions:
+        qid = str(q["_id"])
+        answer = answers.get(qid)
+        is_correct = grade_answer(q, answer)
+        points = int(q.get("points", 1) or 1)
+        total_points += points
+        awarded = 0
+        needs_review = is_correct is None
+        if needs_review:
+            pending_review = True
+        elif is_correct:
+            awarded = points
+            earned_points += points
+        results.append({
+            "question_id": qid,
+            "question_text": q.get("question_text"),
+            "question_type": q.get("question_type"),
+            "answer": answer,
+            "correct": is_correct,
+            "needs_review": needs_review,
+            "points": points,
+            "awarded_points": awarded,
+            "correct_answer": q.get("correct_answer"),
+            "sample_answer": q.get("sample_answer") or "",
+            "explanation": q.get("explanation"),
+        })
+    score = round((earned_points / total_points) * 100) if total_points else 0
+    passed = (not pending_review) and score >= int(passing_score or 60)
+    return {
+        "results": results,
+        "score": score,
+        "earned_points": earned_points,
+        "total_points": total_points,
+        "passed": passed,
+        "pending_review": pending_review,
+    }
+
+
+def _public_quiz_payload(quiz, questions):
+    qs = list(questions)
+    if quiz.get("randomize"):
+        random.shuffle(qs)
+    data = serialize_doc(quiz)
+    data.pop("teacher_id", None)
+    data["questions"] = _questions_without_answers(qs)
+    data["questions_count"] = len(qs)
+    data["guest_entry"] = True
+    return data
+
+
 @quizzes_bp.route("/", methods=["GET"])
 @jwt_required()
 def list_quizzes():
@@ -202,6 +287,7 @@ def create_quiz():
         "max_attempts": int(data.get("max_attempts", 3)),
         "passing_score": int(data.get("passing_score", 60)),
         "hide_answers": True,
+        "share_enabled": True,
         "created_at": utc_now(),
     }
     result = db.quizzes.insert_one(quiz)
@@ -260,6 +346,7 @@ def _replace_lesson_quiz(db, lesson_id, teacher_id, data, role: str = "teacher")
         "max_attempts": int(data.get("max_attempts", 3)),
         "passing_score": int(data.get("passing_score", 60)),
         "hide_answers": True,
+        "share_enabled": True,
         "language": data.get("language") or "en",
         "created_at": utc_now(),
         "updated_at": utc_now(),
@@ -308,6 +395,70 @@ def attach_quiz_to_lesson():
     return jsonify({"message": "Đã gắn đề vào bài học", "quiz": quiz_data}), 201
 
 
+@quizzes_bp.route("/<quiz_id>/public", methods=["GET"])
+@limiter.limit("60 per minute")
+def get_quiz_public(quiz_id):
+    db = get_db()
+    quiz = db.quizzes.find_one({"_id": to_object_id(quiz_id)})
+    if not quiz:
+        return jsonify({"message": "Không tìm thấy bài kiểm tra"}), 404
+    questions = list(db.questions.find({"quiz_id": quiz["_id"]}))
+    return jsonify(_public_quiz_payload(quiz, questions))
+
+
+@quizzes_bp.route("/<quiz_id>/guest-submit", methods=["POST"])
+@limiter.limit("30 per hour")
+def guest_submit_quiz(quiz_id):
+    data = request.get_json() or {}
+    identity, err = _guest_identity(data)
+    if err:
+        return jsonify({"message": err}), 400
+
+    db = get_db()
+    quiz = db.quizzes.find_one({"_id": to_object_id(quiz_id)})
+    if not quiz:
+        return jsonify({"message": "Không tìm thấy bài kiểm tra"}), 404
+
+    attempt_count = db.attempts.count_documents({
+        "quiz_id": quiz["_id"],
+        "guest": True,
+        "student_name_key": identity["student_name_key"],
+        "class_name_key": identity["class_name_key"],
+    })
+    if attempt_count >= quiz.get("max_attempts", 3):
+        return jsonify({"message": "Đã hết lượt làm bài"}), 400
+
+    questions = list(db.questions.find({"quiz_id": quiz["_id"]}))
+    graded = _score_submission(questions, data.get("answers", {}), quiz.get("passing_score", 60))
+    attempt = {
+        "student_id": None,
+        "guest": True,
+        "student_name": identity["student_name"],
+        "class_name": identity["class_name"],
+        "student_name_key": identity["student_name_key"],
+        "class_name_key": identity["class_name_key"],
+        "quiz_id": quiz["_id"],
+        "lesson_id": quiz.get("lesson_id"),
+        "answers": graded["results"],
+        "score": graded["score"],
+        "earned_points": graded["earned_points"],
+        "total_points": graded["total_points"],
+        "passed": graded["passed"],
+        "pending_review": graded["pending_review"],
+        "time_taken_seconds": data.get("time_taken_seconds", 0),
+        "created_at": utc_now(),
+    }
+    result = db.attempts.insert_one(attempt)
+    attempt["_id"] = result.inserted_id
+    return jsonify({
+        "attempt": serialize_doc(attempt),
+        "score": graded["score"],
+        "passed": graded["passed"],
+        "pending_review": graded["pending_review"],
+        "results": graded["results"],
+    })
+
+
 @quizzes_bp.route("/<quiz_id>/submit", methods=["POST"])
 @jwt_required()
 def submit_quiz(quiz_id):
@@ -327,52 +478,18 @@ def submit_quiz(quiz_id):
         return jsonify({"message": "Đã hết lượt làm bài"}), 400
 
     questions = list(db.questions.find({"quiz_id": quiz["_id"]}))
-    answers = data.get("answers", {})
-    results = []
-    total_points = 0
-    earned_points = 0
-    pending_review = False
-
-    for q in questions:
-        qid = str(q["_id"])
-        answer = answers.get(qid)
-        is_correct = grade_answer(q, answer)
-        points = int(q.get("points", 1) or 1)
-        total_points += points
-        awarded = 0
-        needs_review = is_correct is None
-        if needs_review:
-            pending_review = True
-        elif is_correct:
-            awarded = points
-            earned_points += points
-        results.append({
-            "question_id": qid,
-            "question_text": q.get("question_text"),
-            "question_type": q.get("question_type"),
-            "answer": answer,
-            "correct": is_correct,
-            "needs_review": needs_review,
-            "points": points,
-            "awarded_points": awarded,
-            "correct_answer": q.get("correct_answer"),
-            "sample_answer": q.get("sample_answer") or "",
-            "explanation": q.get("explanation"),
-        })
-
-    score = round((earned_points / total_points) * 100) if total_points else 0
-    passed = (not pending_review) and score >= quiz.get("passing_score", 60)
-
+    graded = _score_submission(questions, data.get("answers", {}), quiz.get("passing_score", 60))
     attempt = {
         "student_id": user_id,
+        "guest": False,
         "quiz_id": quiz["_id"],
         "lesson_id": quiz.get("lesson_id"),
-        "answers": results,
-        "score": score,
-        "earned_points": earned_points,
-        "total_points": total_points,
-        "passed": passed,
-        "pending_review": pending_review,
+        "answers": graded["results"],
+        "score": graded["score"],
+        "earned_points": graded["earned_points"],
+        "total_points": graded["total_points"],
+        "passed": graded["passed"],
+        "pending_review": graded["pending_review"],
         "time_taken_seconds": data.get("time_taken_seconds", 0),
         "created_at": utc_now(),
     }
@@ -381,10 +498,10 @@ def submit_quiz(quiz_id):
 
     return jsonify({
         "attempt": serialize_doc(attempt),
-        "score": score,
-        "passed": passed,
-        "pending_review": pending_review,
-        "results": results,
+        "score": graded["score"],
+        "passed": graded["passed"],
+        "pending_review": graded["pending_review"],
+        "results": graded["results"],
     })
 
 
@@ -409,11 +526,18 @@ def get_attempts(quiz_id):
     attempts = list(db.attempts.find(query).sort("created_at", -1))
     if is_owner:
         for a in attempts:
-            student = db.users.find_one(
-                {"_id": a.get("student_id")},
-                {"full_name": 1, "email": 1},
-            )
-            a["student"] = serialize_doc(student) if student else None
+            if a.get("guest") or not a.get("student_id"):
+                a["student"] = {
+                    "full_name": a.get("student_name") or "Học sinh",
+                    "email": None,
+                    "class_name": a.get("class_name") or "",
+                }
+            else:
+                student = db.users.find_one(
+                    {"_id": a.get("student_id")},
+                    {"full_name": 1, "email": 1},
+                )
+                a["student"] = serialize_doc(student) if student else None
     quiz_data = serialize_doc(quiz)
     if not is_owner:
         quiz_data.pop("hide_answers", None)
