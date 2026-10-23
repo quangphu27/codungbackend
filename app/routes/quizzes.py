@@ -126,6 +126,20 @@ def normalize_quiz_questions(questions):
                 "explanation": str(q.get("explanation") or ""),
             })
             continue
+        if q_type in ("fill_blank", "fill-in", "fill_in", "dien_khuyet"):
+            text = _stem(q)
+            if not text:
+                continue
+            normalized.append({
+                "question_text": text,
+                "question_type": "fill_blank",
+                "options": [],
+                "correct_answer": str(q.get("correct_answer") or "").strip(),
+                "sample_answer": "",
+                "points": int(q.get("points") or 1),
+                "explanation": str(q.get("explanation") or ""),
+            })
+            continue
         opts = [str(o).strip() for o in (q.get("options") or []) if str(o).strip()]
         correct = str(q.get("correct_answer") or "").strip()
         if q_type == "true_false":

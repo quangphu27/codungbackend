@@ -38,6 +38,10 @@ def init_extensions(app):
         app,
         origins=app.config["CORS_ORIGINS"],
         supports_credentials=True,
+        allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
+        expose_headers=["Content-Disposition", "Content-Type", "Content-Length"],
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+        max_age=86400,
     )
 
     mongo_client = MongoClient(app.config["MONGODB_URI"])

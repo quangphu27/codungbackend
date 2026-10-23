@@ -7,6 +7,7 @@ from __future__ import annotations
 import io
 import json
 import re
+import unicodedata
 from typing import Any
 
 from flask import current_app
@@ -71,6 +72,13 @@ def _is_math_topic(subject: str = "", topic: str = "") -> bool:
     return any(k in blob for k in keys)
 
 
+def _is_literature_topic(subject: str = "", topic: str = "") -> bool:
+    blob = _fold_text(f"{subject} {topic}")
+    return any(k in blob for k in (
+        "ngu van", "van hoc", "literature", "truyen kieu", "nguyen du", "tac pham",
+    ))
+
+
 def _quiz_subject_rules(grade: str, subject: str, topic: str) -> str:
     if _is_math_topic(subject, topic):
         return f"""
@@ -86,6 +94,18 @@ CONTENT RULES — MATHEMATICS ({grade} · {subject} · {topic}):
 - FORBIDDEN (reject these): “Khái niệm nào liên quan đến {topic}?”, “Which concept relates to {topic}?”,
   options “Nội dung đúng về {topic} / Khái niệm không liên quan / Thông tin sai / Không có đáp án”.
 - Each MCQ option must itself be a formula or a number, not a comment about the topic.
+"""
+    if _is_kieu_topic(subject, topic) or _is_literature_topic(subject, topic):
+        return f"""
+CONTENT RULES — LITERATURE ({grade} · {subject} · {topic}):
+- Ask about the AUTHOR, CHARACTERS, PLOT EVENTS, VERSE FORM and THEMES of “{topic}”.
+- For Truyện Kiều: Nguyễn Du, Thúy Kiều, Thúy Vân, Kim Trọng, Hoạn Thư, lục bát, tài mệnh tương đố, hiếu.
+- MCQ options are names, forms or facts — never classroom behaviour.
+- true_false: mix True and False; never two identical True statements.
+- fill_blank: missing name/form (Nguyễn Du, Thúy Kiều, lục bát); options [].
+- essay: 6–8 English sentences + sample_answer; options [].
+- FORBIDDEN: “what should students do in the lesson”, “join the class task”, “skip the lesson”,
+  “follow the ____ of the teacher”, “write about how students take part”.
 """
     blob = _subject_blob(subject, topic)
     if any(k in blob for k in ("khoa học", "khoa hoc", "science", "vật lý", "vat ly", "hóa", "hoa hoc", "sinh", "physics", "chemistry", "biology")):
@@ -113,14 +133,22 @@ _GENERIC_Q_RE = re.compile(
     r"|khái niệm không liên quan|không liên quan|khong lien quan|unrelated (concept|idea)"
     r"|thông tin sai|thong tin sai|incorrect information"
     r"|không có đáp án|khong co dap an|none of the above"
-    r"|experiential activit|give one accurate fact)",
+    r"|experiential activit|give one accurate fact"
+    r"|what should students do in the lesson"
+    r"|join the class task about"
+    r"|practise this lesson by doing the tasks"
+    r"|follow the _{2,} of the teacher"
+    r"|how students take part in"
+    r"|write 6.?8 sentences about how students)",
     re.I,
 )
 _GENERIC_OPT_RE = re.compile(
     r"(nội dung đúng|noi dung dung|không liên quan|khong lien quan"
     r"|thông tin sai|thong tin sai|không có đáp án|khong co dap an"
     r"|unrelated (concept|idea)|incorrect information|none of the above"
-    r"|a correct idea about|correct content about|experiential activity about)",
+    r"|a correct idea about|correct content about|experiential activity about"
+    r"|join the class task|skip the lesson and stay|leave school before"
+    r"|copy a random answer|stay on the phone)",
     re.I,
 )
 
@@ -138,23 +166,44 @@ def _is_generic_quiz_item(q: dict) -> bool:
     return False
 
 
-def _scrub_quiz_questions(questions: list, grade: str, subject: str, topic: str, need: int) -> list:
-    kept = [q for q in (questions or []) if isinstance(q, dict) and not _is_generic_quiz_item(q)]
-    if len(kept) >= need:
-        return kept[:need]
-    if _is_math_topic(subject, topic):
-        extra = _fallback_math_questions(
-            topic, need, ["multiple_choice", "true_false", "fill_blank", "essay"],
-        )
-        seen = {(q.get("question_text") or "").strip().lower() for q in kept}
-        for q in extra:
-            key = (q.get("question_text") or "").strip().lower()
-            if key in seen:
-                continue
-            kept.append(q)
-            seen.add(key)
-            if len(kept) >= need:
-                break
+def _fold_text(value: str) -> str:
+    text = unicodedata.normalize("NFD", str(value or "").lower())
+    return "".join(ch for ch in text if unicodedata.category(ch) != "Mn")
+
+
+def _scrub_quiz_questions(
+    questions: list,
+    grade: str,
+    subject: str,
+    topic: str,
+    need: int,
+    quiz_types: list | None = None,
+) -> list:
+    kept = []
+    seen = set()
+    for q in questions or []:
+        if not isinstance(q, dict) or _is_generic_quiz_item(q):
+            continue
+        key = str(q.get("question_text") or q.get("question") or "").strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        kept.append(q)
+        if len(kept) >= need:
+            return kept[:need]
+    extra = (
+        _fallback_math_questions(topic, need, quiz_types or ["multiple_choice", "true_false", "fill_blank", "essay"])
+        if _is_math_topic(subject, topic)
+        else _fallback_topic_questions(grade, subject, topic, need, quiz_types)
+    )
+    for q in extra:
+        key = str(q.get("question_text") or "").strip().lower()
+        if not key or key in seen:
+            continue
+        kept.append(q)
+        seen.add(key)
+        if len(kept) >= need:
+            break
     return kept[:need]
 
 
@@ -704,6 +753,446 @@ def _fallback_math_questions(topic: str, num_questions: int, types: list) -> lis
     return out[:num_questions]
 
 
+def _is_kieu_topic(subject: str, topic: str) -> bool:
+    blob = _fold_text(f"{subject} {topic}")
+    return any(k in blob for k in (
+        "truyen kieu", "nguyen du", "thuy kieu", "kim trong", "hoan thu",
+    ))
+
+
+def _pick_typed_questions(bank: list[dict], types: list, num_questions: int) -> list[dict]:
+    types = types or ["multiple_choice"]
+    out = []
+    used = set()
+    type_i = 0
+    for _ in range(num_questions * 6):
+        if len(out) >= num_questions:
+            break
+        want = types[type_i % len(types)]
+        type_i += 1
+        pool = [q for q in bank if q.get("question_type") == want] or bank
+        picked = next((q for q in pool if q["question_text"] not in used), None)
+        if not picked:
+            continue
+        used.add(picked["question_text"])
+        out.append(dict(picked))
+    for q in bank:
+        if len(out) >= num_questions:
+            break
+        if q["question_text"] not in used:
+            used.add(q["question_text"])
+            out.append(dict(q))
+    return out[:num_questions]
+
+
+def _kieu_exam_bank() -> list[dict]:
+    return [
+        {
+            "question_text": "Who wrote the verse novel Truyện Kiều?",
+            "question_type": "multiple_choice",
+            "options": ["A. Nguyễn Du", "B. Hồ Xuân Hương", "C. Nguyễn Trãi", "D. Nguyễn Bỉnh Khiêm"],
+            "correct_answer": "A. Nguyễn Du",
+            "explanation": "Nguyễn Du (1765–1820) wrote Đoạn trường tân thanh, known as Truyện Kiều.",
+            "points": 1,
+        },
+        {
+            "question_text": "Who is the main female character of Truyện Kiều?",
+            "question_type": "multiple_choice",
+            "options": ["A. Thúy Kiều", "B. Hoạn Thư", "C. Đạm Tiên", "D. Thúy Vân"],
+            "correct_answer": "A. Thúy Kiều",
+            "explanation": "Vương Thúy Kiều is the tragic heroine.",
+            "points": 1,
+        },
+        {
+            "question_text": "Kim Trọng is best described as:",
+            "question_type": "multiple_choice",
+            "options": [
+                "A. Kiều’s fiancé and first love",
+                "B. Kiều’s father",
+                "C. A mandarin who arrests Kiều",
+                "D. Kiều’s younger brother",
+            ],
+            "correct_answer": "A. Kiều’s fiancé and first love",
+            "explanation": "Kiều and Kim Trọng exchange vows under the moon before her family crisis.",
+            "points": 1,
+        },
+        {
+            "question_text": "Thúy Vân is Kiều’s:",
+            "question_type": "multiple_choice",
+            "options": ["A. Younger sister", "B. Mother", "C. Teacher", "D. Servant"],
+            "correct_answer": "A. Younger sister",
+            "explanation": "Thúy Vân later marries Kim Trọng while Kiều is away.",
+            "points": 1,
+        },
+        {
+            "question_text": "Truyện Kiều is mainly written in which Vietnamese verse form?",
+            "question_type": "multiple_choice",
+            "options": ["A. Lục bát", "B. Free verse", "C. Sonnet", "D. Haiku"],
+            "correct_answer": "A. Lục bát",
+            "explanation": "The narrative uses lục bát (6–8) lines.",
+            "points": 1,
+        },
+        {
+            "question_text": "The theme “tài mệnh tương đố” in Truyện Kiều means:",
+            "question_type": "multiple_choice",
+            "options": [
+                "A. Talent and fate are in conflict",
+                "B. War is better than peace",
+                "C. Students must copy the teacher",
+                "D. Love always wins easily",
+            ],
+            "correct_answer": "A. Talent and fate are in conflict",
+            "explanation": "Beautiful, talented Kiều still suffers because of fate.",
+            "points": 1,
+        },
+        {
+            "question_text": "Nguyễn Du wrote Truyện Kiều.",
+            "question_type": "true_false",
+            "options": ["True", "False"],
+            "correct_answer": "True",
+            "explanation": "The author is Nguyễn Du.",
+            "points": 1,
+        },
+        {
+            "question_text": "Thúy Kiều is only a minor character in Truyện Kiều.",
+            "question_type": "true_false",
+            "options": ["True", "False"],
+            "correct_answer": "False",
+            "explanation": "She is the main character.",
+            "points": 1,
+        },
+        {
+            "question_text": "Kim Trọng is Kiều’s first love.",
+            "question_type": "true_false",
+            "options": ["True", "False"],
+            "correct_answer": "True",
+            "explanation": "They pledge love before her family disaster.",
+            "points": 1,
+        },
+        {
+            "question_text": "Hoạn Thư is Kiều’s younger sister.",
+            "question_type": "true_false",
+            "options": ["True", "False"],
+            "correct_answer": "False",
+            "explanation": "Hoạn Thư is Thúc Sinh’s jealous wife; Thúy Vân is the sister.",
+            "points": 1,
+        },
+        {
+            "question_text": "Complete: Truyện Kiều was written by ______.",
+            "question_type": "fill_blank",
+            "options": [],
+            "correct_answer": "Nguyễn Du",
+            "explanation": "The author is Nguyễn Du.",
+            "points": 1,
+        },
+        {
+            "question_text": "Complete: The heroine of Truyện Kiều is ______.",
+            "question_type": "fill_blank",
+            "options": [],
+            "correct_answer": "Thúy Kiều",
+            "explanation": "Vương Thúy Kiều.",
+            "points": 1,
+        },
+        {
+            "question_text": "Complete: Kiều’s first love is ______.",
+            "question_type": "fill_blank",
+            "options": [],
+            "correct_answer": "Kim Trọng",
+            "explanation": "Kim Trọng.",
+            "points": 1,
+        },
+        {
+            "question_text": "Complete: Truyện Kiều is written in the verse form ______.",
+            "question_type": "fill_blank",
+            "options": [],
+            "correct_answer": "lục bát",
+            "explanation": "Lục bát (six-eight verse).",
+            "points": 1,
+        },
+        {
+            "question_text": "Explain in 6–8 English sentences why Thúy Kiều has to leave home and sell herself. Give one event from the story.",
+            "question_type": "essay",
+            "options": [],
+            "correct_answer": "Kiều sacrifices herself to save her family after her father is arrested; she is sold into a brothel.",
+            "sample_answer": (
+                "Kiều’s father and brother are arrested after a false accusation. "
+                "To pay the officials and save her family, she agrees to be sold in marriage. "
+                "The matchmaker Mã Giám Sinh tricks her and she is forced into a brothel. "
+                "This shows her filial piety (hiếu) and the unfair fate of a talented woman."
+            ),
+            "explanation": "Score: family crisis, sacrifice, one named event, personal comment.",
+            "points": 2,
+        },
+        {
+            "question_text": "Compare Thúy Kiều and Thúy Vân in 6–8 English sentences. What does each sister represent?",
+            "question_type": "essay",
+            "options": [],
+            "correct_answer": "Kiều is talented but unlucky; Vân is calmer and later lives a stable life with Kim Trọng.",
+            "sample_answer": (
+                "Kiều is more beautiful and gifted, yet she suffers. "
+                "Vân is quieter and later marries Kim Trọng. "
+                "Nguyễn Du contrasts talent versus a peaceful fate."
+            ),
+            "explanation": "Score contrast, fate, and one example.",
+            "points": 2,
+        },
+        {
+            "question_text": "From whose Chinese novel did Nguyễn Du adapt Truyện Kiều?",
+            "question_type": "multiple_choice",
+            "options": [
+                "A. Thanh Tâm Tài Nhân’s Kim Vân Kiều",
+                "B. Romance of the Three Kingdoms",
+                "C. Journey to the West",
+                "D. The Tale of Genji",
+            ],
+            "correct_answer": "A. Thanh Tâm Tài Nhân’s Kim Vân Kiều",
+            "explanation": "Đoạn trường tân thanh retells Kim Vân Kiều truyện.",
+            "points": 1,
+        },
+        {
+            "question_text": "Hoạn Thư is mainly known in the story as:",
+            "question_type": "multiple_choice",
+            "options": [
+                "A. Thúc Sinh’s jealous wife who punishes Kiều",
+                "B. Kiều’s kind aunt",
+                "C. A Buddhist nun who writes the poem",
+                "D. Kim Trọng’s mother",
+            ],
+            "correct_answer": "A. Thúc Sinh’s jealous wife who punishes Kiều",
+            "explanation": "Hoạn Thư is famous for jealousy and later a moment of generosity.",
+            "points": 1,
+        },
+        {
+            "question_text": "Explain in 6–8 English sentences the idea “tài mệnh tương đố” using Kiều’s life.",
+            "question_type": "essay",
+            "options": [],
+            "correct_answer": "Talent and fate conflict: Kiều is gifted but suffers injustice and exile.",
+            "sample_answer": (
+                "Tài mệnh tương đố means talent and fate clash. "
+                "Kiều is beautiful and skilled at music and poetry, yet she is sold and suffers. "
+                "Nguyễn Du shows a talented woman crushed by family duty and social injustice."
+            ),
+            "explanation": "Score definition, Kiều example, and a comment on fate.",
+            "points": 2,
+        },
+    ]
+
+
+def _general_topic_exam_bank(grade: str, subject: str, topic: str) -> list[dict]:
+    title = topic or subject or "this lesson"
+    return [
+        {
+            "question_text": f"Which focus belongs to the lesson “{title}”?",
+            "question_type": "multiple_choice",
+            "options": [
+                f"A. Facts, people and events of “{title}”",
+                "B. A Wi-Fi password",
+                "C. Yesterday’s football score",
+                "D. A random cooking recipe",
+            ],
+            "correct_answer": f"A. Facts, people and events of “{title}”",
+            "explanation": "Stay on the named topic.",
+            "points": 1,
+        },
+        {
+            "question_text": f"This {subject} lesson is mainly about:",
+            "question_type": "multiple_choice",
+            "options": [
+                f"A. {title}",
+                "B. Computer hardware only",
+                "C. Driving rules",
+                "D. Weather on Mars",
+            ],
+            "correct_answer": f"A. {title}",
+            "explanation": "The topic title is the exam focus.",
+            "points": 1,
+        },
+        {
+            "question_text": f"Students of {grade} study “{title}” in {subject}.",
+            "question_type": "true_false",
+            "options": ["True", "False"],
+            "correct_answer": "True",
+            "explanation": f"The paper is written for {grade}.",
+            "points": 1,
+        },
+        {
+            "question_text": f"“{title}” is a chemistry formula, not a lesson topic.",
+            "question_type": "true_false",
+            "options": ["True", "False"],
+            "correct_answer": "False",
+            "explanation": "It is the lesson topic.",
+            "points": 1,
+        },
+        {
+            "question_text": f"Complete: The title of this lesson is ______.",
+            "question_type": "fill_blank",
+            "options": [],
+            "correct_answer": title,
+            "explanation": "Use the exact topic.",
+            "points": 1,
+        },
+        {
+            "question_text": f"Complete: The school subject of this paper is ______.",
+            "question_type": "fill_blank",
+            "options": [],
+            "correct_answer": subject or "Literature",
+            "explanation": "Copy the subject name.",
+            "points": 1,
+        },
+        {
+            "question_text": f"Write 6–8 English sentences on the main idea of “{title}”. Give one concrete example.",
+            "question_type": "essay",
+            "options": [],
+            "correct_answer": f"State the main idea of {title} and one example.",
+            "sample_answer": f"The lesson “{title}” asks students to explain the content and give a real example.",
+            "explanation": "Score main idea, example, organisation.",
+            "points": 2,
+        },
+        {
+            "question_text": f"In 6–8 English sentences, explain why “{title}” matters for {grade} students.",
+            "question_type": "essay",
+            "options": [],
+            "correct_answer": f"Link {title} to knowledge and values for {grade}.",
+            "sample_answer": f"“{title}” helps {grade} students understand the work and discuss its meaning.",
+            "explanation": "Score reason, example, comment.",
+            "points": 2,
+        },
+        {
+            "question_text": f"Which class is this “{title}” paper written for?",
+            "question_type": "multiple_choice",
+            "options": [f"A. {grade}", "B. Kindergarten only", "C. University physics", "D. A driving school"],
+            "correct_answer": f"A. {grade}",
+            "explanation": f"Grade is {grade}.",
+            "points": 1,
+        },
+        {
+            "question_text": f"A student can ignore the content of “{title}” and still score full marks.",
+            "question_type": "true_false",
+            "options": ["True", "False"],
+            "correct_answer": "False",
+            "explanation": "The exam tests the topic itself.",
+            "points": 1,
+        },
+    ]
+
+
+def _fallback_topic_questions(
+    grade: str,
+    subject: str,
+    topic: str,
+    num_questions: int,
+    quiz_types: list | None = None,
+) -> list[dict]:
+    types = quiz_types or ["multiple_choice"]
+    bank = _kieu_exam_bank() if _is_kieu_topic(subject, topic) else _general_topic_exam_bank(grade, subject, topic)
+    return _pick_typed_questions(bank, types, num_questions)
+
+
+def _complete_quiz_questions(
+    questions: list,
+    grade: str,
+    subject: str,
+    topic: str,
+    need: int,
+    quiz_types: list | None = None,
+) -> list[dict]:
+    """Dedup, drop fillers, pad from the topic bank, keep types and answers complete."""
+    from app.routes.quizzes import normalize_quiz_questions
+
+    types = quiz_types or ["multiple_choice"]
+    qs = _scrub_quiz_questions(
+        normalize_quiz_questions(questions),
+        grade, subject, topic, need, types,
+    )
+    bank = _fallback_topic_questions(grade, subject, topic, max(need, 16), types)
+    stems = {
+        str(q.get("question_text") or "").strip().lower()
+        for q in qs
+    }
+    for extra in bank:
+        if len(qs) >= need:
+            break
+        stem = str(extra.get("question_text") or "").strip().lower()
+        if stem and stem not in stems:
+            qs.append(dict(extra))
+            stems.add(stem)
+
+    present = {q.get("question_type") for q in qs}
+    if len(qs) >= len(types):
+        counts: dict[str, int] = {}
+        for q in qs:
+            t = q.get("question_type") or "multiple_choice"
+            counts[t] = counts.get(t, 0) + 1
+        for want in types:
+            if want in present:
+                continue
+            extra = next(
+                (
+                    dict(q) for q in bank
+                    if q.get("question_type") == want
+                    and str(q.get("question_text") or "").strip().lower() not in stems
+                ),
+                None,
+            )
+            if not extra:
+                continue
+            replace_i = next(
+                (i for i in range(len(qs) - 1, -1, -1) if counts.get(qs[i].get("question_type"), 0) >= 2),
+                None,
+            )
+            if replace_i is None:
+                if len(qs) < need:
+                    qs.append(extra)
+                    stems.add(str(extra.get("question_text") or "").strip().lower())
+                    present.add(want)
+                continue
+            old_t = qs[replace_i].get("question_type")
+            counts[old_t] = counts.get(old_t, 1) - 1
+            qs[replace_i] = extra
+            counts[want] = counts.get(want, 0) + 1
+            present.add(want)
+            stems.add(str(extra.get("question_text") or "").strip().lower())
+
+    tf_idx = [i for i, q in enumerate(qs) if q.get("question_type") == "true_false"]
+    tf_answers = {str(qs[i].get("correct_answer") or "") for i in tf_idx}
+    if len(tf_idx) >= 2 and tf_answers <= {"True"}:
+        false_bank = [
+            dict(q) for q in bank
+            if q.get("question_type") == "true_false"
+            and str(q.get("correct_answer") or "") == "False"
+            and str(q.get("question_text") or "").strip().lower() not in stems
+        ]
+        for n, i in enumerate(tf_idx):
+            if n == 0 or not false_bank:
+                continue
+            extra = false_bank.pop(0)
+            stems.add(str(extra.get("question_text") or "").strip().lower())
+            extra["options"] = ["True", "False"]
+            qs[i] = extra
+
+    out = []
+    for q in qs[:need]:
+        item = dict(q)
+        qtype = item.get("question_type") or "multiple_choice"
+        if qtype in ("fill_blank", "essay"):
+            item["options"] = []
+            if not str(item.get("correct_answer") or "").strip():
+                item["correct_answer"] = str(item.get("sample_answer") or topic)
+        elif qtype == "true_false":
+            item["options"] = ["True", "False"]
+            if item.get("correct_answer") not in ("True", "False"):
+                item["correct_answer"] = "True"
+        elif qtype == "multiple_choice":
+            opts = [str(o).strip() for o in (item.get("options") or []) if str(o).strip()]
+            while len(opts) < 4:
+                opts.append(f"Option {len(opts) + 1}")
+            item["options"] = opts[:4]
+            if item.get("correct_answer") not in item["options"]:
+                item["correct_answer"] = item["options"][0]
+        out.append(item)
+    return out
+
+
 def _fallback_quiz(
     grade: str,
     subject: str,
@@ -715,65 +1204,15 @@ def _fallback_quiz(
     types = quiz_types or ["multiple_choice"]
     if _is_math_topic(subject, topic):
         questions = _fallback_math_questions(topic, num_questions, types)
-        return {
-            "title": f"Practice quiz: {topic}",
-            "grade": grade,
-            "subject": subject,
-            "topic": topic,
-            "language": language,
-            "passing_score": 60,
-            "time_limit_minutes": 20,
-            "questions": questions,
-            "source": "practice",
-            "note": None,
-        }
-    questions = []
-    for i in range(1, num_questions + 1):
-        qtype = types[(i - 1) % len(types)]
-        if qtype == "essay":
-            questions.append({
-                "question_text": f"Question {i}: Write 6–8 sentences about how students take part in “{topic}” at school. Give one example.",
-                "question_type": "essay",
-                "options": [],
-                "correct_answer": f"Describe the activity, one example, and what students learn from {topic}.",
-                "sample_answer": f"Students join {topic}, work with classmates, and explain one real example from school.",
-                "explanation": "Score ideas, examples, and organisation.",
-                "points": 2,
-            })
-        elif qtype == "true_false":
-            questions.append({
-                "question_text": f"Question {i}: Students in {grade} can practise this lesson by doing the tasks of “{topic}”.",
-                "question_type": "true_false",
-                "options": ["True", "False"],
-                "correct_answer": "True",
-                "explanation": f"{topic} is a classroom task for {grade}.",
-                "points": 1,
-            })
-        elif qtype == "fill_blank":
-            questions.append({
-                "question_text": f"Question {i}: Complete: In the lesson “{topic}”, students should follow the ______ of the teacher.",
-                "question_type": "fill_blank",
-                "options": [],
-                "correct_answer": "instructions",
-                "explanation": "Students follow classroom instructions.",
-                "points": 1,
-            })
-        else:
-            questions.append({
-                "question_text": f"Question {i}: What should students do in the lesson “{topic}”?",
-                "question_type": "multiple_choice",
-                "options": [
-                    f"A. Join the class task about {topic} and follow the teacher",
-                    "B. Skip the lesson and stay on the phone",
-                    "C. Leave school before it starts",
-                    "D. Copy a random answer without reading",
-                ],
-                "correct_answer": f"A. Join the class task about {topic} and follow the teacher",
-                "explanation": f"Students take part in {topic} as taught in class.",
-                "points": 1,
-            })
+        title = f"Practice quiz: {topic}"
+    else:
+        questions = _fallback_topic_questions(grade, subject, topic, num_questions, types)
+        title = f"Quiz: {topic}"
+    questions = _complete_quiz_questions(
+        questions, grade, subject, topic, num_questions, types,
+    )
     return {
-        "title": f"Quiz: {topic}",
+        "title": title,
         "grade": grade,
         "subject": subject,
         "topic": topic,
@@ -1128,6 +1567,12 @@ FORBIDDEN questions/options (do not write these at all):
 - “Khái niệm nào liên quan đến {topic}?” / “Which concept relates to {topic}?”
 - “Nội dung đúng về {topic}” / “Khái niệm không liên quan” / “Thông tin sai” / “Không có đáp án”
 - “A correct idea about {topic}” / “An unrelated concept” / “Incorrect information” / “None of the above”
+- “What should students do in the lesson” / “Join the class task” / “Skip the lesson”
+- Classroom-behaviour fillers. Ask about people, events, form and themes of “{topic}”.
+If the topic is Truyện Kiều / Nguyễn Du: ask about Nguyễn Du, Thúy Kiều, Thúy Vân, Kim Trọng, Hoạn Thư, lục bát, tài mệnh.
+true_false: mix True and False answers; never two identical True stems.
+fill_blank: options must be [] and correct_answer is the missing word (e.g. Nguyễn Du).
+essay: options [] and sample_answer filled.
 {lang_rule}
 {_quiz_subject_rules(grade, subject, topic)}
 Return JSON only.
@@ -1135,13 +1580,11 @@ Return JSON only.
     system = SYSTEM_MATH_EXAM if _is_math_topic(subject, topic) else (
         SYSTEM_TEACHER + " For this quiz, write a real exam. Never use placeholder/meta options."
     )
-    from app.routes.quizzes import normalize_quiz_questions
 
     def _bank_quiz():
         fb = _fallback_quiz(grade, subject, topic, num_questions, types, language)
-        fb["questions"] = _scrub_quiz_questions(
-            normalize_quiz_questions(fb.get("questions")),
-            grade, subject, topic, num_questions,
+        fb["questions"] = _complete_quiz_questions(
+            fb.get("questions"), grade, subject, topic, num_questions, types,
         )
         fb["source"] = "practice"
         fb["quiz_types"] = types
@@ -1152,7 +1595,9 @@ Return JSON only.
 
     try:
         compact_quiz = (
-            f"{brief}\nJSON exam, {min(num_questions, 8)} short English questions, complete JSON, no truncate.\n"
+            f"{brief}\nJSON exam on \"{topic}\", {min(num_questions, 10)} English questions, types {types_text}. "
+            "Facts only (people, events, form). No classroom-behaviour fillers. Mix True/False. "
+            "fill_blank and essay: options []. Complete JSON.\n"
             '{"title":"...","questions":[{"question_text":"...","question_type":"multiple_choice","options":["A. ...","B. ...","C. ...","D. ..."],"correct_answer":"A. ...","points":1}]}'
         )
         data, source = _ask_studio_json(
@@ -1162,38 +1607,14 @@ Return JSON only.
             timeout=30 if light else 40,
             compact_prompt=compact_quiz,
         )
-        if data and data.get("questions"):
-            data["questions"] = _scrub_quiz_questions(
-                normalize_quiz_questions(data.get("questions")),
-                grade, subject, topic, num_questions,
-            )
-        else:
-            data = {"questions": []}
-        qs = data.get("questions") or []
-        if len(qs) < num_questions:
-            bank = _bank_quiz()
-            stems = {
-                str(q.get("question_text") or q.get("question") or "").strip().lower()
-                for q in qs
-            }
-            for extra in bank.get("questions") or []:
-                if len(qs) >= num_questions:
-                    break
-                stem = str(extra.get("question_text") or extra.get("question") or "").strip().lower()
-                if stem and stem not in stems:
-                    qs.append(extra)
-                    stems.add(stem)
-            data["questions"] = qs[:num_questions]
-        if len(data.get("questions") or []) < max(3, min(num_questions, 4)):
-            bank = _bank_quiz()
-            have = data.get("questions") or []
-            if have:
-                bank["questions"] = have + [q for q in bank["questions"] if q not in have]
-                bank["questions"] = bank["questions"][:num_questions]
-                bank["source"] = source or "gemini"
-                bank.pop("note", None)
-                return bank
-            return bank
+        raw = (data or {}).get("questions") if data else []
+        questions = _complete_quiz_questions(
+            raw, grade, subject, topic, num_questions, types,
+        )
+        if len(questions) < max(3, min(num_questions, 4)):
+            return _bank_quiz()
+        data = data or {}
+        data["questions"] = questions
         data["source"] = source or "ai"
         data.setdefault("grade", grade)
         data.setdefault("subject", subject)
@@ -1813,13 +2234,14 @@ def _normalize_eight_step(data: dict, grade: str, subject: str, topic: str, desc
     if not activities:
         activities = fb["interactive"]["activities"]
     from app.routes.quizzes import normalize_quiz_questions
+    eight_types = ["multiple_choice", "true_false", "fill_blank", "essay"]
     quiz_qs = _scrub_quiz_questions(
         normalize_quiz_questions(quiz.get("questions") or []),
-        grade, subject, topic, 8,
+        grade, subject, topic, 8, eight_types,
     )
     if len(quiz_qs) < 4:
         quiz_qs = _scrub_quiz_questions(
-            fb["quiz"]["questions"], grade, subject, topic, 8,
+            fb["quiz"]["questions"], grade, subject, topic, 8, eight_types,
         )
     out = {
         "title": str(data.get("title") or topic)[:160],
@@ -1997,9 +2419,12 @@ def build_docx_bytes(lesson: dict) -> bytes:
     return build_rich_docx_bytes(lesson)
 
 
-def build_pptx_bytes(deck: dict) -> bytes:
+def build_pptx_bytes(deck: dict, light: bool = False) -> bytes:
     from app.services.pptx_builder import build_rich_pptx_bytes
-    return build_rich_pptx_bytes(deck)
+    payload = dict(deck or {})
+    if light:
+        payload["light"] = True
+    return build_rich_pptx_bytes(payload)
 
 
 def quiz_to_docx_bytes(quiz: dict) -> bytes:

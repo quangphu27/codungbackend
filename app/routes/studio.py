@@ -537,7 +537,13 @@ def export_pptx():
     if not deck:
         return jsonify({"message": "Thiếu nội dung slide (deck)"}), 400
 
-    content = studio_service.build_pptx_bytes(deck)
+    light = bool(payload.get("light") or (request.get_json() or {}).get("light"))
+    try:
+        content = studio_service.build_pptx_bytes(deck, light=light)
+    except Exception:
+        from flask import current_app
+        current_app.logger.exception("export pptx failed, retry light")
+        content = studio_service.build_pptx_bytes(deck, light=True)
     filename = _safe_download_name(deck.get("topic"), "slide", ".pptx")
     if not filename.startswith("slide"):
         filename = f"slide_{filename}"
@@ -911,7 +917,12 @@ def library_download(item_id):
         mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         filename = _safe_download_name(item.get("title"), "quiz", ".docx")
     elif kind == "pptx":
-        blob = studio_service.build_pptx_bytes(content)
+        try:
+            blob = studio_service.build_pptx_bytes(content)
+        except Exception:
+            from flask import current_app
+            current_app.logger.exception("library pptx download failed, retry light")
+            blob = studio_service.build_pptx_bytes(content, light=True)
         mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
         filename = _safe_download_name(item.get("title"), "slide", ".pptx")
     else:

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import time
 import urllib.parse
 import urllib.request
 
@@ -308,7 +309,7 @@ def _fetch_wikimedia_image(query: str, w: int = 900) -> bytes | None:
     headers = {"User-Agent": "EduBrightTeacherStudio/1.0 (educational; contact@local)"}
     try:
         req = urllib.request.Request(api, headers=headers)
-        with urllib.request.urlopen(req, timeout=10) as res:
+        with urllib.request.urlopen(req, timeout=4) as res:
             payload = json_loads_safe(res.read().decode("utf-8", "ignore"))
         pages = ((payload or {}).get("query") or {}).get("pages") or {}
         for page in pages.values():
@@ -323,7 +324,7 @@ def _fetch_wikimedia_image(query: str, w: int = 900) -> bytes | None:
             if not url:
                 continue
             req2 = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req2, timeout=12) as res2:
+            with urllib.request.urlopen(req2, timeout=6) as res2:
                 data = res2.read()
                 if data and len(data) > 2000:
                     return data
@@ -342,7 +343,17 @@ def json_loads_safe(text: str):
 
 _IMAGE_CACHE: dict[str, bytes] = {}
 _AI_IMAGE_ATTEMPTS = 0
-_AI_IMAGE_LIMIT = 4
+_AI_IMAGE_LIMIT = 2
+_EXPORT_DEADLINE = 0.0
+_EXPORT_LIGHT = False
+# Render proxy kills requests around 100s without CORS headers — finish earlier.
+_EXPORT_BUDGET_SEC = 70.0
+
+
+def _seconds_left() -> float:
+    if not _EXPORT_DEADLINE:
+        return _EXPORT_BUDGET_SEC
+    return _EXPORT_DEADLINE - time.monotonic()
 
 
 def _image_cache_key(*parts) -> str:
@@ -378,6 +389,7 @@ def _related_image_bytes(
     title: str = "",
     bullets: list | None = None,
     scene: str = "",
+    light: bool = False,
 ) -> bytes:
     """Gemini image first (paid), then Vietnam Commons photos, then themed illustration."""
     cache_key = _image_cache_key(keyword, topic, title, scene, " | ".join(str(b) for b in (bullets or [])[:4]))
@@ -385,8 +397,13 @@ def _related_image_bytes(
     if cached:
         return cached
 
+    if light or _seconds_left() < 8:
+        fallback = _make_themed_illustration(keyword, topic, title)
+        _IMAGE_CACHE[cache_key] = fallback
+        return fallback
+
     global _AI_IMAGE_ATTEMPTS
-    if _AI_IMAGE_ATTEMPTS < _AI_IMAGE_LIMIT:
+    if _AI_IMAGE_ATTEMPTS < _AI_IMAGE_LIMIT and _seconds_left() > 16:
         _AI_IMAGE_ATTEMPTS += 1
         try:
             from app.services.ai_service import generate_slide_image
@@ -394,7 +411,7 @@ def _related_image_bytes(
             generated = generate_slide_image(
                 _gemini_image_prompt(keyword, topic, title, bullets, scene),
                 aspect_ratio="4:3",
-                timeout=22,
+                timeout=min(12, max(6, int(_seconds_left() - 8))),
             )
             if generated and len(generated) > 2000:
                 _IMAGE_CACHE[cache_key] = generated
@@ -417,15 +434,11 @@ def _related_image_bytes(
         "learn": "vietnamese students school experiential learning",
     }
     vn_theme = theme_queries.get(theme, "vietnamese students school")
-    candidates = [
-        f"{query} Vietnam",
-        f"{query} Việt Nam",
-        vn_theme,
-        f"Vietnam {query}",
-        query,
-    ]
+    candidates = [vn_theme, f"{query} Vietnam"] if _seconds_left() > 8 else []
     seen = set()
     for q in candidates:
+        if _seconds_left() < 6:
+            break
         key = (q or "").strip().lower()
         if not key or key in seen:
             continue
@@ -491,6 +504,7 @@ def _add_image_or_art(
         title,
         bullets=bullets,
         scene=scene,
+        light=_EXPORT_LIGHT,
     )
     pad = int(0.06 * 914400)
     try:
@@ -862,7 +876,10 @@ def _layout_closing(slide, prs, data, meta):
 
 def _prefetch_slide_images(slides: list, topic: str) -> None:
     """Generate Gemini images in parallel for photo slides so export stays within timeout."""
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor, wait
+
+    if _EXPORT_LIGHT or _seconds_left() < 16:
+        return
 
     try:
         from flask import current_app, has_app_context
@@ -899,11 +916,14 @@ def _prefetch_slide_images(slides: list, topic: str) -> None:
                 keyword, topic_name, title,
                 bullets=list(bullets),
                 scene=scene,
+                light=_EXPORT_LIGHT,
             )
 
-    workers = min(4, len(jobs))
+    workers = min(2, len(jobs))
+    wait_sec = max(4.0, min(22.0, _seconds_left() - 12))
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        list(pool.map(_run, jobs))
+        futures = [pool.submit(_run, job) for job in jobs]
+        wait(futures, timeout=wait_sec)
 
 
 def build_rich_pptx_bytes(deck: dict) -> bytes:
@@ -926,8 +946,10 @@ def build_rich_pptx_bytes(deck: dict) -> bytes:
     if not slides:
         slides = [{"layout": "title", "title": meta["topic"], "subtitle": meta["subject"], "bullets": []}]
 
-    global _AI_IMAGE_ATTEMPTS
+    global _AI_IMAGE_ATTEMPTS, _EXPORT_DEADLINE, _EXPORT_LIGHT
     _AI_IMAGE_ATTEMPTS = 0
+    _EXPORT_LIGHT = bool(deck.get("light") or deck.get("skip_ai_images"))
+    _EXPORT_DEADLINE = time.monotonic() + (28.0 if _EXPORT_LIGHT else _EXPORT_BUDGET_SEC)
     _prefetch_slide_images(slides, meta["topic"])
     total = len(slides)
     for idx, raw in enumerate(slides):

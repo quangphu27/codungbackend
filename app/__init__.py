@@ -1,4 +1,4 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from werkzeug.exceptions import RequestEntityTooLarge
 from app.config.config import Config
 from app.extensions import init_extensions, limiter
@@ -80,6 +80,21 @@ def create_app(config_class=Config):
     @app.errorhandler(500)
     def internal_error(e):
         return jsonify({"message": "Lỗi máy chủ nội bộ"}), 500
+
+    @app.after_request
+    def _ensure_cors(resp):
+        origin = (request.headers.get("Origin") or "").rstrip("/")
+        allowed = {str(o).rstrip("/") for o in (app.config.get("CORS_ORIGINS") or [])}
+        if origin and origin in allowed:
+            resp.headers["Access-Control-Allow-Origin"] = origin
+            resp.headers["Access-Control-Allow-Credentials"] = "true"
+            resp.headers["Access-Control-Expose-Headers"] = (
+                "Content-Disposition, Content-Type, Content-Length"
+            )
+            vary = resp.headers.get("Vary", "")
+            if "Origin" not in vary:
+                resp.headers["Vary"] = (vary + ", Origin").strip(", ").strip()
+        return resp
 
     return app
 

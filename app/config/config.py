@@ -18,6 +18,25 @@ def _db_name_from_mongodb_uri(uri: str) -> str | None:
     return path.split("?")[0].split("/")[0] or None
 
 
+def cors_origins() -> list[str]:
+    """Always include the live teacher site so PPTX export is not blocked by CORS."""
+    seen: list[str] = []
+    extra = [
+        os.getenv("FRONTEND_URL", "http://localhost:5173"),
+        os.getenv("CORS_ORIGINS", ""),
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "https://dayhocbangtienganh.com",
+        "https://www.dayhocbangtienganh.com",
+    ]
+    for chunk in extra:
+        for part in str(chunk or "").split(","):
+            origin = part.strip().rstrip("/")
+            if origin and origin not in seen:
+                seen.append(origin)
+    return seen
+
+
 class Config:
     SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-key")
     JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", "jwt-dev-secret")
@@ -54,7 +73,7 @@ class Config:
     GEMINI_IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "")
     AI_PROVIDER = os.getenv("AI_PROVIDER", "gemini")  # 'gemini' hoặc 'openai'
     FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
-    CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
+    CORS_ORIGINS = cors_origins()
 
     RATELIMIT_DEFAULT = "200 per hour"
     RATELIMIT_STORAGE_URI = "memory://"
