@@ -163,15 +163,18 @@ def _add_bullets(slide, left, top, width, height, bullets, *, size=None, color=D
 
 
 def _search_query(keyword: str, topic: str = "", title: str = "") -> str:
-    """Build a content-related search phrase (English nouns)."""
+    """Build a content-related search phrase (English nouns + Vietnam)."""
     parts = []
     for part in (keyword, title, topic):
         t = " ".join(str(part or "").replace("/", " ").split())
-        if t:
+        if t and t not in parts:
             parts.append(t)
-    q = " ".join(parts[:2]).strip() or "education classroom"
-    # keep short for API search
-    return " ".join(q.split()[:6])
+    q = " ".join(parts).strip() or "vietnamese students school"
+    words = q.split()[:8]
+    text = " ".join(words)
+    if "vietnam" not in text.lower() and "viet" not in text.lower():
+        text = f"{text} Vietnam"
+    return text
 
 
 def _theme_key(text: str) -> str:
@@ -269,7 +272,7 @@ def _make_themed_illustration(keyword: str, topic: str = "", title: str = "", w:
         draw.ellipse((cx - 100, cy - 80, cx + 100, cy + 120), fill=c1)
         draw.rounded_rectangle((cx - 70, cy - 20, cx + 70, cy + 90), radius=20, fill=(255, 255, 255))
 
-    label = (_search_query(keyword, topic, title) or theme).title()[:28]
+    label = (title or keyword or topic or theme).strip()[:32]
     try:
         font = ImageFont.truetype("arial.ttf", 36)
         small = ImageFont.truetype("arial.ttf", 22)
@@ -373,24 +376,64 @@ def _related_image_bytes(keyword: str, topic: str = "", title: str = "") -> byte
     return _make_themed_illustration(keyword, topic, title)
 
 
+def _round_photo(raw: bytes, w: int = 960, h: int = 720, radius: int = 42) -> bytes:
+    from PIL import Image, ImageDraw, ImageOps
+
+    im = Image.open(io.BytesIO(raw)).convert("RGB")
+    im = ImageOps.fit(im, (w, h), Image.Resampling.LANCZOS)
+    rgba = im.convert("RGBA")
+    mask = Image.new("L", (w, h), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 0, w - 1, h - 1), radius=radius, fill=255)
+    rgba.putalpha(mask)
+    buf = io.BytesIO()
+    rgba.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _soft_shadow(shape):
+    try:
+        from lxml import etree
+        sp_pr = shape._element.spPr
+        xml = (
+            '<a:effectLst xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+            '<a:outerShdw blurRad="50800" dist="25400" dir="2700000" algn="tl" rotWithShape="0">'
+            '<a:prstClr val="black"><a:alpha val="28000"/></a:prstClr>'
+            "</a:outerShdw></a:effectLst>"
+        )
+        sp_pr.append(etree.fromstring(xml))
+    except Exception:
+        pass
+
+
 def _add_image_or_art(slide, left, top, width, height, keyword: str, topic: str, title: str = "", meta=None):
-    """Place a content-related photo or themed illustration."""
+    """Place a framed, rounded, content-related photo or themed illustration."""
     from pptx.enum.shapes import MSO_SHAPE
     from pptx.util import Inches
 
     img = _related_image_bytes(keyword or topic or title, topic, title)
+    pad = int(0.06 * 914400)
     try:
-        stream = io.BytesIO(img)
-        slide.shapes.add_picture(stream, left, top, width=width, height=height)
-        bar = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, left, top + height - Inches(0.12), width, Inches(0.12))
+        prepared = _round_photo(img)
+        frame = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, left, top, width, height)
+        _fill_shape(frame, P(meta, "white"))
+        _soft_shadow(frame)
+        pic = slide.shapes.add_picture(
+            io.BytesIO(prepared),
+            left + pad, top + pad,
+            width=width - 2 * pad, height=height - 2 * pad,
+        )
+        bar = slide.shapes.add_shape(
+            MSO_SHAPE.ROUNDED_RECTANGLE,
+            left, top + height - Inches(0.14), width, Inches(0.14),
+        )
         _fill_shape(bar, P(meta, "orange"))
-        return
+        return pic
     except Exception:
         panel = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, left, top, width, height)
         _fill_shape(panel, P(meta, "sky"))
         _add_textbox(
             slide, left + Inches(0.2), top + height / 2 - Inches(0.3), width - Inches(0.4), Inches(0.6),
-            (keyword or topic or "Topic")[:28], size=16, bold=True, color=P(meta, "navy"), align="center",
+            (title or keyword or topic or "Topic")[:28], size=16, bold=True, color=P(meta, "navy"), align="center",
         )
 
 
@@ -558,6 +601,8 @@ def _layout_title(slide, prs, data, meta):
     from pptx.util import Inches
 
     _add_rect(slide, 0, 0, prs.slide_width, prs.slide_height, P(meta, "navy"))
+    deco = slide.shapes.add_shape(MSO_SHAPE.OVAL, Inches(-1.4), Inches(-1.6), Inches(3.6), Inches(3.6))
+    _fill_shape(deco, P(meta, "orange"))
     _add_rect(slide, Inches(8.2), 0, Inches(5.2), prs.slide_height, P(meta, "teal"))
     accent = slide.shapes.add_shape(MSO_SHAPE.RIGHT_TRIANGLE, Inches(7.2), 0, Inches(1.2), prs.slide_height)
     _fill_shape(accent, P(meta, "teal"))
@@ -584,11 +629,14 @@ def _layout_title(slide, prs, data, meta):
 
 
 def _layout_content(slide, prs, data, meta, page, total):
+    from pptx.enum.shapes import MSO_SHAPE
     from pptx.util import Inches
 
     _add_rect(slide, 0, 0, prs.slide_width, prs.slide_height, P(meta, "soft"))
     _add_rect(slide, 0, 0, prs.slide_width, Inches(1.15), P(meta, "navy"))
     _add_rect(slide, 0, Inches(1.15), Inches(0.18), Inches(6.0), P(meta, "orange"))
+    accent = slide.shapes.add_shape(MSO_SHAPE.OVAL, Inches(12.55), Inches(0.22), Inches(0.55), Inches(0.55))
+    _fill_shape(accent, P(meta, "orange"))
     title_box = _add_textbox(slide, Inches(0.55), Inches(0.28), Inches(8.5), Inches(0.7), data.get("title") or "Content", size=26, bold=True, color=P(meta, "white"))
     bullets = data.get("bullets") or data.get("left_bullets") or []
     fs = _bullet_font_size(bullets, base=19, few=24, many=16)
@@ -616,9 +664,11 @@ def _layout_two_column(slide, prs, data, meta, page, total):
     c1 = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(0.5), Inches(1.45), Inches(5.9), Inches(5.3))
     _fill_shape(c1, P(meta, "white"))
     c1.line.color.rgb = _rgb(P(meta, "sky"))
+    _soft_shadow(c1)
     c2 = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, Inches(6.9), Inches(1.45), Inches(5.9), Inches(5.3))
     _fill_shape(c2, P(meta, "white"))
     c2.line.color.rgb = _rgb(P(meta, "sky"))
+    _soft_shadow(c2)
     _add_rect(slide, Inches(0.5), Inches(1.45), Inches(5.9), Inches(0.15), P(meta, "teal"))
     _add_rect(slide, Inches(6.9), Inches(1.45), Inches(5.9), Inches(0.15), P(meta, "orange"))
     h1 = _add_textbox(slide, Inches(0.75), Inches(1.75), Inches(5.4), Inches(0.4), data.get("left_title") or "Overview", size=17, bold=True, color=P(meta, "teal"))
@@ -697,6 +747,7 @@ def _layout_cards(slide, prs, data, meta, page, total):
         left = start + i * (width + gap)
         card = slide.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE, left, Inches(1.6), width, Inches(4.9))
         _fill_shape(card, P(meta, "white"))
+        _soft_shadow(card)
         top = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, left, Inches(1.6), width, Inches(0.85))
         _fill_shape(top, colors[i % len(colors)])
         num = _add_textbox(slide, left + Inches(0.15), Inches(1.75), width - Inches(0.3), Inches(0.5), f"0{i+1}", size=20, bold=True, color=P(meta, "white"), align="center")

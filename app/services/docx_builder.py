@@ -210,8 +210,8 @@ def _procedure_rows(lesson: dict) -> list[list[str]]:
         heading = sec.get("heading_vi") or sec.get("heading_en") or f"Step {i+1}"
         content = (sec.get("content_vi") or sec.get("content_en") or "").strip()
         # shorten for table cell
-        if len(content) > 220:
-            content = content[:217] + "..."
+        if len(content) > 360:
+            content = content[:357] + "..."
         time = sec.get("duration") or (default_times[i] if i < len(default_times) else "8'")
         teacher = sec.get("teacher_activity") or "Hướng dẫn / Facilitate"
         student = sec.get("student_activity") or "Thực hiện / Practice"
@@ -278,6 +278,31 @@ def build_rich_docx_bytes(lesson: dict) -> bytes:
         _add_para(doc, "Objectives (English)", size=12, bold=True, color=theme["teal"], space_before=8, space_after=4)
         for i, o in enumerate(objs_en, 1):
             _add_bullet(doc, f" {o}", bold_prefix=f"{i}.")
+    knowledge = lesson.get("knowledge_vi") or []
+    skills = lesson.get("skills_vi") or []
+    qualities = lesson.get("qualities_vi") or []
+    if knowledge or skills or qualities:
+        _add_para(doc, "Kiến thức – Kỹ năng – Phẩm chất", size=12, bold=True, color=theme["teal"], space_before=8, space_after=4)
+        if knowledge:
+            _add_para(doc, "Kiến thức", size=11, bold=True, color=theme["navy"], space_after=2)
+            for item in knowledge:
+                _add_bullet(doc, f" {item}")
+        if skills:
+            _add_para(doc, "Kỹ năng", size=11, bold=True, color=theme["navy"], space_before=6, space_after=2)
+            for item in skills:
+                _add_bullet(doc, f" {item}")
+        if qualities:
+            _add_para(doc, "Phẩm chất", size=11, bold=True, color=theme["navy"], space_before=6, space_after=2)
+            for item in qualities:
+                _add_bullet(doc, f" {item}")
+    core_vi = (lesson.get("core_content_vi") or "").strip()
+    core_en = (lesson.get("core_content_en") or "").strip()
+    if core_vi or core_en:
+        _add_para(doc, "Nội dung kiến thức cốt lõi", size=12, bold=True, color=theme["teal"], space_before=8, space_after=4)
+        if core_vi:
+            _add_para(doc, core_vi, size=13, color=GRAY, align="justify", first_line=True, space_after=6)
+        if core_en:
+            _add_para(doc, core_en, size=12, italic=True, color=GRAY, align="justify", space_after=6)
 
     # ===== MATERIALS =====
     _add_heading_custom(doc, "III. ĐỒ DÙNG DẠY HỌC / MATERIALS", level=1, theme=theme)
@@ -332,10 +357,23 @@ def build_rich_docx_bytes(lesson: dict) -> bytes:
             _add_para(doc, "Content (EN):", size=11, bold=True, color=theme["teal"], space_after=2)
             _add_para(doc, c_en, size=13, color=GRAY, align="justify", first_line=True, space_after=6)
 
+        steps = sec.get("procedure_steps") or []
+        if steps:
+            _add_para(doc, "Các bước tiến hành:", size=11, bold=True, color=theme["navy"], space_after=2)
+            for si, step in enumerate(steps, 1):
+                _add_bullet(doc, f" {step}", bold_prefix=f"{si}.")
         if sec.get("teacher_activity"):
             _add_para(doc, f"Hoạt động GV / Teacher: {sec['teacher_activity']}", size=11, color=GRAY, space_after=3)
         if sec.get("student_activity"):
-            _add_para(doc, f"Hoạt động HS / Students: {sec['student_activity']}", size=11, color=GRAY, space_after=6)
+            _add_para(doc, f"Hoạt động HS / Students: {sec['student_activity']}", size=11, color=GRAY, space_after=3)
+        if sec.get("expected_product"):
+            _add_para(doc, f"Sản phẩm dự kiến: {sec['expected_product']}", size=11, italic=True, color=theme["teal"], space_after=3)
+        questions = sec.get("questions") or []
+        if questions:
+            _add_para(doc, "Câu hỏi gợi mở:", size=11, bold=True, color=theme["navy"], space_after=2)
+            for q in questions:
+                _add_bullet(doc, f" {q}")
+        _add_para(doc, "", space_after=4)
 
     # ===== VOCABULARY TABLE =====
     vocab = lesson.get("vocabulary") or []
@@ -388,6 +426,11 @@ def build_rich_docx_bytes(lesson: dict) -> bytes:
         _add_bullet(doc, f" {h}")
 
     # ===== NOTES =====
+    diff = (lesson.get("differentiation") or "").strip()
+    if diff:
+        _add_heading_custom(doc, "VIII.b. PHÂN HÓA – HỖ TRỢ / DIFFERENTIATION", level=1, theme=theme)
+        _add_para(doc, diff, size=12, color=GRAY, align="justify", first_line=True, space_after=8)
+
     _add_heading_custom(doc, "IX. GHI CHÚ / NOTES", level=1, theme=theme)
     note = lesson.get("notes") or lesson.get("note") or (
         "Giáo viên điều chỉnh thời gian và hoạt động phù hợp năng lực lớp. "

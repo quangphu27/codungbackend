@@ -15,10 +15,37 @@ from app.services.ai_service import _call_ai
 
 
 SYSTEM_TEACHER = (
-    "Bạn là trợ lý biên soạn học liệu song ngữ Việt–Anh cho giáo dục phổ thông Việt Nam. "
-    "Trả lời đúng schema JSON được yêu cầu, không thêm markdown/code fence ngoài JSON. "
-    "Nội dung sư phạm rõ ràng, phù hợp học sinh phổ thông, có phần tiếng Việt và tiếng Anh."
+    "Bạn là chuyên gia biên soạn giáo án Hoạt động trải nghiệm theo Chương trình GDPT 2018 Việt Nam. "
+    "CHỈ dùng thông tin giáo viên cung cấp (lớp, môn, chủ đề, mô tả, yêu cầu thêm, ngôn ngữ, màu sắc). "
+    "Không đổi chủ đề, không viết giáo án generic. "
+    "Viết nội dung DÀI, cụ thể, có tình huống thật ở trường Việt Nam, có lời giáo viên và câu hỏi gợi ý. "
+    "Trả về đúng JSON, không markdown."
 )
+
+
+def _teacher_brief(
+    *,
+    grade: str,
+    subject: str,
+    topic: str,
+    language: str = "vi",
+    description: str = "",
+    extra_requirements: str = "",
+    theme_color: str = "",
+    theme_accent: str = "",
+    extra_lines: str = "",
+) -> str:
+    return (
+        "THÔNG TIN GIÁO VIÊN (bắt buộc bám sát từng dòng):\n"
+        f"- Khối/Lớp: {grade}\n"
+        f"- Môn học: {subject}\n"
+        f"- Chủ đề: {topic}\n"
+        f"- Mô tả: {description.strip() or '(không có mô tả — khai thác sâu đúng chủ đề trên)'}\n"
+        f"- Ngôn ngữ soạn: {language}\n"
+        f"- Yêu cầu thêm: {extra_requirements.strip() or '(không)'}\n"
+        f"- Màu chủ đạo / nhấn: {theme_color or '-'} / {theme_accent or '-'}\n"
+        + (f"{extra_lines.strip()}\n" if extra_lines else "")
+    )
 
 
 def _strip_json(text: str) -> str:
@@ -340,53 +367,74 @@ def generate_lesson_draft(
     theme_color: str = "#0F2744",
     theme_accent: str = "#F39C4A",
 ) -> dict:
-    req = _brief_requirements(description, extra_requirements)
+    brief = _teacher_brief(
+        grade=grade, subject=subject, topic=topic, language=language,
+        description=description, extra_requirements=extra_requirements,
+        theme_color=theme_color, theme_accent=theme_accent,
+    )
+    lang_rule = {
+        "vi": "Viết DÀI bằng tiếng Việt (title_en/objectives_en/content_en có thể ngắn hơn hoặc tóm tắt).",
+        "en": "Write FULL detailed English; keep title_vi and a Vietnamese summary in content_vi.",
+        "bilingual": "Viết đầy đủ cả tiếng Việt lẫn tiếng Anh, phần Việt phải dài và cụ thể.",
+    }.get(language, "Viết dài, cụ thể bằng tiếng Việt.")
     prompt = f"""
-Tạo giáo án trải nghiệm ĐẦY ĐỦ theo JSON (nội dung sư phạm chi tiết, không viết quá ngắn):
+{brief}
+
+Soạn GIÁO ÁN TRẢI NGHIỆM ĐẦY ĐỦ, DÀI, dùng được luôn trên lớp (không viết ngắn/sơ sài). JSON:
 {{
   "title_vi": "...",
   "title_en": "...",
   "grade": "{grade}",
   "subject": "{subject}",
   "topic": "{topic}",
-  "description": "{description}",
+  "description": "diễn giải lại mô tả GV thành đoạn 4-6 câu",
   "duration_minutes": 45,
-  "materials": ["...", "..."],
-  "objectives_vi": ["...", "...", "...", "..."],
-  "objectives_en": ["...", "...", "...", "..."],
+  "materials": ["đồ dùng cụ thể, có màu {theme_color}/{theme_accent} nếu trang trí"],
+  "objectives_vi": ["năng lực/phẩm chất/kiến thức — mỗi mục 1-2 câu"],
+  "objectives_en": ["..."],
+  "knowledge_vi": ["kiến thức trọng tâm, mỗi ý 2-3 câu"],
+  "skills_vi": ["kỹ năng"],
+  "qualities_vi": ["phẩm chất"],
+  "core_content_vi": "Bài viết 180-280 chữ: kiến thức cốt lõi GV sẽ dạy, ví dụ thực tế trường Việt Nam, gắn đúng chủ đề và mô tả.",
+  "core_content_en": "optional English summary",
   "sections": [
     {{
       "heading_vi": "...",
       "heading_en": "...",
-      "duration": "5'",
-      "content_vi": "đoạn 3-6 câu chi tiết",
-      "content_en": "3-6 full sentences",
-      "teacher_activity": "...",
-      "student_activity": "..."
+      "duration": "7'",
+      "content_vi": "8-14 câu: mục tiêu hoạt động, cách tiến hành từng bước, câu hỏi GV, câu trả lời dự kiến, sản phẩm HS.",
+      "content_en": "...",
+      "procedure_steps": ["Bước 1: ...", "Bước 2: ...", "Bước 3: ..."],
+      "teacher_activity": "lời/hành động GV cụ thể",
+      "student_activity": "việc HS làm cụ thể",
+      "expected_product": "sản phẩm/kết quả quan sát được",
+      "questions": ["câu hỏi gợi mở 1", "câu hỏi 2"]
     }}
   ],
   "vocabulary": [
-    {{"term": "...", "meaning_vi": "...", "example": "English sentence"}}
+    {{"term": "English term", "meaning_vi": "...", "example": "câu ví dụ gắn chủ đề"}}
   ],
   "assessment": {{
-    "methods": ["...", "..."],
-    "criteria": ["...", "..."]
+    "methods": ["..."],
+    "criteria": ["tiêu chí quan sát được"],
+    "rubric": ["Đạt: ...", "Cần hỗ trợ: ..."]
   }},
-  "homework": ["...", "...", "..."],
-  "notes": "ghi chú ngắn cho giáo viên"
+  "homework": ["nhiệm vụ cụ thể, có hạn và sản phẩm"],
+  "differentiation": "cách hỗ trợ HS yếu / nâng cao HS khá, 4-6 câu",
+  "notes": "tổ chức sân/lớp, an toàn, dùng màu chủ đạo khi trang trí"
 }}
 
-Yêu cầu BẮT BUỘC:
-- 5-6 sections (Khởi động, Kiến thức, Trải nghiệm, Luyện tập, Phản ánh/Đánh giá, ...)
-- Mỗi content_vi/content_en đủ ý, rõ ràng, phù hợp lớp {grade}, môn {subject}
-- vocabulary 6-10 mục
-- Ngôn ngữ ưu tiên: {language} (vi = viết kỹ tiếng Việt; en = English; bilingual = cả hai)
-- Màu chủ đạo (ghi vào notes nếu cần đồ dùng/trang trí): {theme_color} / nhấn {theme_accent}
-- {req}
-Chỉ trả về JSON hợp lệ.
+YÊU CẦU BẮT BUỘC:
+- {lang_rule}
+- Đúng lớp {grade}, môn {subject}, ĐÚNG chủ đề "{topic}". Mọi ví dụ phải lấy từ mô tả/yêu cầu thêm (nếu có).
+- 6-7 sections: Khởi động; Hình thành kiến thức; Trải nghiệm chính; Luyện tập/vận dụng; Trình bày sản phẩm; Phản ánh – đánh giá (có thể thêm Kết nối thực tiễn).
+- Mỗi content_vi tối thiểu ~80 từ, có đối thoại GV–HS, không gạch đầu dòng chung chung.
+- procedure_steps 3-5 bước/phần. vocabulary 8-12 từ. materials 6-10 mục.
+- Nếu yêu cầu thêm nhắc hoạt động nhóm / thời gian / từ vựng / trang trí: phải thể hiện rõ trong sections/materials/notes.
+Chỉ trả JSON hợp lệ.
 """
     text, source = _call_ai(
-        prompt, SYSTEM_TEACHER, max_tokens=6000, json_mode=True, timeout=120,
+        prompt, SYSTEM_TEACHER, max_tokens=8192, json_mode=True, timeout=150,
     )
     data = _parse_json(text) if text else None
     if not data or not (data.get("sections") or data.get("objectives_vi")):
@@ -421,13 +469,24 @@ def generate_quiz_draft(
     num_questions = max(3, min(int(num_questions or 8), 20))
     types = quiz_types or ["multiple_choice"]
     types_text = ", ".join(types)
-    req = _brief_requirements(description, extra_requirements, quiz_requirements)
+    brief = _teacher_brief(
+        grade=grade, subject=subject, topic=topic, language=language,
+        description=description, extra_requirements=extra_requirements,
+        theme_color=theme_color, theme_accent=theme_accent,
+        extra_lines=(
+            f"- Yêu cầu đề: {quiz_requirements or '(không)'}\n"
+            f"- Loại câu: {types_text}\n"
+            f"- Số câu: {num_questions}; Độ khó: {difficulty}"
+        ),
+    )
     lang_rule = {
         "vi": "Viết TOÀN BỘ câu hỏi, đáp án, giải thích bằng tiếng Việt.",
         "en": "Write ALL questions, options, explanations in English.",
         "bilingual": "Câu hỏi tiếng Việt; có thể thêm thuật ngữ English trong ngoặc.",
     }.get(language, "Viết câu hỏi bằng tiếng Việt.")
     prompt = f"""
+{brief}
+
 Tạo đề kiểm tra JSON — PHẢI đúng loại câu và yêu cầu giáo viên:
 {{
   "title": "...",
@@ -458,8 +517,8 @@ Loại câu BẮT BUỘC dùng (phân bổ xen kẽ, đủ các loại đã ch�
 - fill_blank: không cần options, correct_answer là từ/cụm cần điền.
 - essay: không options; sample_answer là ý chính để giáo viên chấm; points 2–3.
 {lang_rule}
-{req}
-Nội dung sát chủ đề, thực tế Việt Nam, phù hợp học sinh {grade}.
+Câu hỏi phải lấy ý từ mô tả/yêu cầu đề, không hỏi chung chung.
+Nội dung sát chủ đề, thực tế trường học Việt Nam, phù hợp học sinh {grade}.
 Chỉ trả về JSON.
 """
     text, source = _call_ai(
@@ -544,37 +603,65 @@ def _normalize_pptx_slides(slides: list, topic: str, language: str = "vi") -> li
             "left_bullets": left,
             "right_bullets": right,
             "table": table,
-            "image_keyword": str(s.get("image_keyword") or topic)[:60],
+            "image_keyword": str(s.get("image_keyword") or topic)[:80],
             "notes": str(s.get("notes") or ""),
         })
     return normalized
 
 
-def _enrich_image_keywords(slides: list[dict], topic: str) -> list[dict]:
-    """Ensure each slide has a concrete, content-related image keyword."""
-    topic_l = (topic or "").lower()
-    # Topic-level visual anchors
-    topic_visual = "classroom students learning"
-    if any(k in topic_l for k in ("chào cờ", "chao co", "flag", "cờ", "assembly", "national")):
-        topic_visual = "school flag ceremony students vietnam"
-    elif any(k in topic_l for k in ("recycl", "tái chế", "tai che", "waste")):
-        topic_visual = "recycling bins students"
-    elif any(k in topic_l for k in ("prime", "nguyên tố", "nguyen to")):
-        topic_visual = "mathematics numbers classroom"
+_VISUAL_GLOSSARY = (
+    ("chào cờ", "vietnam school flag raising ceremony students"),
+    ("chao co", "vietnam school flag raising ceremony students"),
+    ("quốc kỳ", "vietnam red flag yellow star"),
+    ("quoc ky", "vietnam red flag yellow star"),
+    ("quốc ca", "students singing vietnam national anthem"),
+    ("quoc ca", "students singing vietnam national anthem"),
+    ("xếp hàng", "vietnamese students lining up schoolyard"),
+    ("xep hang", "vietnamese students lining up schoolyard"),
+    ("sân trường", "vietnam schoolyard students assembly"),
+    ("san truong", "vietnam schoolyard students assembly"),
+    ("tôn trọng", "students saluting vietnam national flag"),
+    ("ton trong", "students saluting vietnam national flag"),
+    ("cờ đỏ", "vietnam red flag yellow star"),
+    ("sao vàng", "vietnam yellow star red flag"),
+    ("lễ chào", "vietnam school monday flag ceremony"),
+    ("đoàn kết", "vietnamese students holding hands school"),
+    ("tái chế", "vietnam students recycling plastic bottles"),
+    ("môi trường", "vietnam school green trees students"),
+    ("nhóm", "vietnamese students teamwork classroom"),
+    ("thảo luận", "vietnamese students discussion classroom"),
+    ("viết", "students writing notebook classroom vietnam"),
+    ("trình bày", "student presenting in front of class vietnam"),
+)
 
-    weak = {"", "education", "learning", "background", "abstract", "image", "photo", "topic"}
+
+def _visual_from_text(*parts: str) -> str:
+    blob = " ".join(str(p or "") for p in parts).lower()
+    hits = [en for vi, en in _VISUAL_GLOSSARY if vi in blob]
+    if hits:
+        return hits[0]
+    return ""
+
+
+def _enrich_image_keywords(slides: list[dict], topic: str) -> list[dict]:
+    """Keyword ảnh lấy từ tiêu đề + bullets từng slide, ưu tiên cảnh Việt Nam."""
+    topic_visual = _visual_from_text(topic) or "vietnamese students school experiential activity"
+    weak = {
+        "", "education", "learning", "background", "abstract", "image", "photo",
+        "topic", "slide", "content", "school", "students",
+    }
     for s in slides:
-        title = (s.get("title") or "").lower()
+        title = s.get("title") or ""
+        bullets = s.get("bullets") or s.get("left_bullets") or []
+        body = " ".join(str(b) for b in bullets[:3])
+        mapped = _visual_from_text(title, body, topic)
         kw = (s.get("image_keyword") or "").strip()
-        if kw.lower() in weak or kw.lower() == (topic or "").lower():
-            # Derive from title words + topic visual
-            words = [w for w in title.replace("/", " ").split() if len(w) > 3][:4]
-            derived = " ".join(words) if words else topic_visual
-            s["image_keyword"] = f"{derived} {topic_visual}".strip()[:70]
-        # Flag-ceremony specific overrides by title cues
-        if any(k in title for k in ("flag", "anthem", "ceremony", "assembly", "respect", "line up")):
-            s["image_keyword"] = (s.get("image_keyword") or "") + " school flag ceremony"
-            s["image_keyword"] = s["image_keyword"][:70]
+        if kw.lower() in weak or kw.lower() == (topic or "").lower() or len(kw.split()) < 3:
+            words = [w for w in title.replace("/", " ").split() if len(w) > 3][:5]
+            derived = " ".join(words)
+            s["image_keyword"] = (mapped or f"{derived} {topic_visual}").strip()[:80]
+        elif mapped and "vietnam" not in kw.lower() and "viet" not in kw.lower():
+            s["image_keyword"] = f"{kw} {mapped}".strip()[:80]
     return slides
 
 
@@ -599,14 +686,16 @@ def generate_pptx_draft(
             sections_brief.append({
                 "heading": s.get("heading_en") or s.get("heading_vi"),
                 "duration": s.get("duration"),
-                "content": ((s.get("content_en") or s.get("content_vi") or "")[:220]),
+                "content": ((s.get("content_en") or s.get("content_vi") or "")[:420]),
                 "teacher": s.get("teacher_activity"),
                 "student": s.get("student_activity"),
             })
         brief = {
             "title": lesson_context.get("title_en") or lesson_context.get("title_vi"),
-            "objectives": (lesson_context.get("objectives_en") or lesson_context.get("objectives_vi") or [])[:5],
-            "materials": (lesson_context.get("materials") or [])[:5],
+            "description": (lesson_context.get("description") or "")[:400],
+            "core_content": (lesson_context.get("core_content_vi") or lesson_context.get("core_content_en") or "")[:500],
+            "objectives": (lesson_context.get("objectives_en") or lesson_context.get("objectives_vi") or [])[:6],
+            "materials": (lesson_context.get("materials") or [])[:8],
             "sections": sections_brief,
             "vocabulary": [
                 {"term": v.get("term"), "meaning": v.get("meaning_vi")}
@@ -618,7 +707,7 @@ def generate_pptx_draft(
         context_hint = (
             "CRITICAL: Build the PowerPoint STRICTLY from this lesson plan / report. "
             "Keep the same teaching flow and ideas (do not invent a different lesson):\n"
-            + json.dumps(brief, ensure_ascii=False)[:3500]
+            + json.dumps(brief, ensure_ascii=False)[:4500]
         )
         follow_lesson = (
             "- Map slides to lesson sections in order (khởi động → kiến thức → hoạt động → luyện tập → phản ánh).\n"
@@ -626,7 +715,11 @@ def generate_pptx_draft(
             "- Reuse key points from section content; keep the requested language.\n"
         )
 
-    req = _brief_requirements(description, extra_requirements)
+    brief_txt = _teacher_brief(
+        grade=grade, subject=subject, topic=topic, language=language,
+        description=description, extra_requirements=extra_requirements,
+        theme_color=theme_color, theme_accent=theme_accent,
+    )
     lang_rule = {
         "vi": "TOÀN BỘ chữ trên slide bằng tiếng Việt (title, bullets, table, notes). image_keyword viết tiếng Anh để tìm ảnh.",
         "en": "ALL slide text in English. image_keyword in English.",
@@ -647,7 +740,9 @@ def generate_pptx_draft(
         )
 
     prompt = f"""
-Tạo dàn ý PowerPoint JSON:
+{brief_txt}
+
+Tạo dàn ý PowerPoint JSON (slide đẹp, giảng được, ảnh sát từng slide):
 {{
   "title": "...",
   "grade": "{grade}",
@@ -665,7 +760,7 @@ Tạo dàn ý PowerPoint JSON:
       "left_bullets": ["..."],
       "right_bullets": ["..."],
       "table": {{"headers": ["A","B","C"], "rows": [["1","2","3"]]}},
-      "image_keyword": "concrete English nouns + Vietnam for a related photo",
+      "image_keyword": "5-8 English nouns describing the EXACT scene of THIS slide, Vietnam school",
       "notes": "presenter notes"
     }}
   ]
@@ -680,14 +775,14 @@ Rules:
 - two_column: 4 bullets mỗi cột.
 - cards: 3–4 cards.
 - table: 4–6 hàng sát nội dung.
-{follow_lesson}- image_keyword MUST match THAT slide, ưu tiên Việt Nam
-  (chào cờ → "vietnam school flag raising ceremony students red flag yellow star";
-  sân trường → "vietnamese students lining up schoolyard";
-  quốc ca → "students singing vietnam national anthem").
-- Never use generic keywords like "background", "abstract", or "education" alone.
-- Màu chủ đạo giáo viên chọn: {theme_color}, nhấn {theme_accent} (ghi vào notes nếu cần).
-- {req}
-Grade: {grade}; Subject: {subject}; Topic: {topic}.
+{follow_lesson}- image_keyword MUST describe the photo of THAT slide only (derived from slide title + bullets), ưu tiên Việt Nam.
+  Ví dụ: chào cờ → "vietnam school flag raising ceremony students red flag yellow star";
+  xếp hàng → "vietnamese students lining up schoolyard";
+  quốc ca → "students singing vietnam national anthem";
+  tôn trọng → "students saluting vietnam national flag".
+- Cấm keyword chung: background, abstract, education, learning, template.
+- Mỗi content slide có 1 ý kiến thức thật lấy từ giáo án/mô tả, không slogan.
+- Màu chủ đạo: {theme_color} / {theme_accent}.
 {context_hint}
 """
     text, source = _ask(prompt)
@@ -699,8 +794,8 @@ Grade: {grade}; Subject: {subject}; Topic: {topic}.
 Return PowerPoint JSON with {slide_count} slides for topic "{topic}".
 Language: {language}. {lang_rule}
 Follow the lesson plan if provided. Layouts: title, content, two_column, table, cards, closing.
-Vietnam-first image_keyword per slide. Valid JSON only.
-{req}
+Vietnam-first image_keyword per slide matching THAT slide title. Valid JSON only.
+{brief_txt}
 {context_hint[:1500]}
 """
         text2, source2 = _ask(retry_prompt)
