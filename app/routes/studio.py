@@ -99,7 +99,7 @@ def studio_status():
     return jsonify({
         "gemini_configured": configured,
         "message": (
-            "Gemini Pro sẵn sàng — giáo án, đề và ảnh slide sát nội dung"
+            "AI đã sẵn sàng"
             if configured
             else "Chưa có API key Gemini. Admin hãy nhập key tại Cài đặt AI."
         ),
