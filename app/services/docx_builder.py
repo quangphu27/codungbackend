@@ -246,8 +246,8 @@ def build_rich_docx_bytes(lesson: dict) -> bytes:
         materials = [materials]
 
     # ===== HEADER =====
-    _add_para(doc, "EXPERIENTIAL LEARNING IN ENGLISH", size=11, bold=True, color=theme["orange"], align="center", space_after=2)
-    _add_para(doc, "GIÁO ÁN BÀI HỌC TRẢI NGHIỆM", size=13, bold=True, color=theme["navy"], align="center", space_after=4)
+    _add_para(doc, "EDUBRIGHT · EXPERIENTIAL LEARNING IN ENGLISH", size=11, bold=True, color=theme["orange"], align="center", space_after=2)
+    _add_para(doc, "GIÁO ÁN BÀI HỌC TRẢI NGHIỆM / BILINGUAL LESSON PLAN", size=13, bold=True, color=theme["navy"], align="center", space_after=4)
     _add_heading_custom(doc, title_vi, level=0, theme=theme)
     if title_en and title_en != title_vi:
         _add_para(doc, title_en, size=13, bold=True, italic=True, color=theme["teal"], align="center", space_after=10)
@@ -260,7 +260,7 @@ def build_rich_docx_bytes(lesson: dict) -> bytes:
         ("Chủ đề / Topic", topic),
         ("Thời lượng / Duration", f"{duration} phút"),
         ("Hình thức / Mode", lesson.get("mode") or "Lớp học · Hoạt động trải nghiệm"),
-        ("Ngôn ngữ / Language", lesson.get("language") or "bilingual"),
+        ("Ngôn ngữ / Language", "Song ngữ Việt – Anh / Bilingual VI–EN"),
     ], theme=theme)
     if description:
         _add_para(doc, "Mô tả / Description", size=12, bold=True, color=theme["teal"], space_after=4)
@@ -281,19 +281,34 @@ def build_rich_docx_bytes(lesson: dict) -> bytes:
     knowledge = lesson.get("knowledge_vi") or []
     skills = lesson.get("skills_vi") or []
     qualities = lesson.get("qualities_vi") or []
-    if knowledge or skills or qualities:
-        _add_para(doc, "Kiến thức – Kỹ năng – Phẩm chất", size=12, bold=True, color=theme["teal"], space_before=8, space_after=4)
+    knowledge_en = lesson.get("knowledge_en") or []
+    skills_en = lesson.get("skills_en") or []
+    qualities_en = lesson.get("qualities_en") or []
+    if knowledge or skills or qualities or knowledge_en or skills_en or qualities_en:
+        _add_para(doc, "Kiến thức – Kỹ năng – Phẩm chất / Knowledge – Skills – Qualities", size=12, bold=True, color=theme["teal"], space_before=8, space_after=4)
         if knowledge:
-            _add_para(doc, "Kiến thức", size=11, bold=True, color=theme["navy"], space_after=2)
+            _add_para(doc, "Kiến thức / Knowledge (VI)", size=11, bold=True, color=theme["navy"], space_after=2)
             for item in knowledge:
                 _add_bullet(doc, f" {item}")
+        if knowledge_en:
+            _add_para(doc, "Knowledge (EN)", size=11, bold=True, color=theme["teal"], space_before=6, space_after=2)
+            for item in knowledge_en:
+                _add_bullet(doc, f" {item}")
         if skills:
-            _add_para(doc, "Kỹ năng", size=11, bold=True, color=theme["navy"], space_before=6, space_after=2)
+            _add_para(doc, "Kỹ năng / Skills (VI)", size=11, bold=True, color=theme["navy"], space_before=6, space_after=2)
             for item in skills:
                 _add_bullet(doc, f" {item}")
+        if skills_en:
+            _add_para(doc, "Skills (EN)", size=11, bold=True, color=theme["teal"], space_before=6, space_after=2)
+            for item in skills_en:
+                _add_bullet(doc, f" {item}")
         if qualities:
-            _add_para(doc, "Phẩm chất", size=11, bold=True, color=theme["navy"], space_before=6, space_after=2)
+            _add_para(doc, "Phẩm chất / Qualities (VI)", size=11, bold=True, color=theme["navy"], space_before=6, space_after=2)
             for item in qualities:
+                _add_bullet(doc, f" {item}")
+        if qualities_en:
+            _add_para(doc, "Qualities (EN)", size=11, bold=True, color=theme["teal"], space_before=6, space_after=2)
+            for item in qualities_en:
                 _add_bullet(doc, f" {item}")
     core_vi = (lesson.get("core_content_vi") or "").strip()
     core_en = (lesson.get("core_content_en") or "").strip()
@@ -363,9 +378,13 @@ def build_rich_docx_bytes(lesson: dict) -> bytes:
             for si, step in enumerate(steps, 1):
                 _add_bullet(doc, f" {step}", bold_prefix=f"{si}.")
         if sec.get("teacher_activity"):
-            _add_para(doc, f"Hoạt động GV / Teacher: {sec['teacher_activity']}", size=11, color=GRAY, space_after=3)
+            _add_para(doc, f"Hoạt động GV (VI): {sec['teacher_activity']}", size=11, color=GRAY, space_after=2)
+        if sec.get("teacher_activity_en"):
+            _add_para(doc, f"Teacher (EN): {sec['teacher_activity_en']}", size=11, italic=True, color=GRAY, space_after=3)
         if sec.get("student_activity"):
-            _add_para(doc, f"Hoạt động HS / Students: {sec['student_activity']}", size=11, color=GRAY, space_after=3)
+            _add_para(doc, f"Hoạt động HS (VI): {sec['student_activity']}", size=11, color=GRAY, space_after=2)
+        if sec.get("student_activity_en"):
+            _add_para(doc, f"Students (EN): {sec['student_activity_en']}", size=11, italic=True, color=GRAY, space_after=3)
         if sec.get("expected_product"):
             _add_para(doc, f"Sản phẩm dự kiến: {sec['expected_product']}", size=11, italic=True, color=theme["teal"], space_after=3)
         questions = sec.get("questions") or []
@@ -442,7 +461,7 @@ def build_rich_docx_bytes(lesson: dict) -> bytes:
     _add_para(doc, "", space_after=8)
     _add_para(
         doc,
-        "— Teacher Studio · Experiential Learning Platform —",
+        "— EduBright · Teacher Studio · Bilingual lesson plan —",
         size=9, italic=True, color=theme["orange"], align="center", space_before=12,
     )
 
@@ -453,12 +472,12 @@ def build_rich_docx_bytes(lesson: dict) -> bytes:
 
 def _type_label(qtype: str) -> str:
     return {
-        "multiple_choice": "Trắc nghiệm",
-        "true_false": "Đúng / Sai",
-        "fill_blank": "Điền khuyết",
-        "essay": "Tự luận",
-        "short_answer": "Tự luận",
-    }.get(qtype or "", "Câu hỏi")
+        "multiple_choice": "Multiple choice",
+        "true_false": "True / False",
+        "fill_blank": "Fill in the blank",
+        "essay": "Essay",
+        "short_answer": "Essay",
+    }.get(qtype or "", "Question")
 
 
 def build_quiz_docx_bytes(quiz: dict) -> bytes:
@@ -485,21 +504,21 @@ def build_quiz_docx_bytes(quiz: dict) -> bytes:
     cell.text = ""
     p = cell.paragraphs[0]
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r = p.add_run("ĐỀ KIỂM TRA TRẢI NGHIỆM")
+    r = p.add_run("EDUBRIGHT  ·  EXPERIENTIAL QUIZ (ENGLISH)")
     _set_run(r, size=16, bold=True, color=(255, 255, 255))
     p2 = cell.add_paragraph()
     p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r2 = p2.add_run(quiz.get("title") or quiz.get("topic") or "Đề kiểm tra")
+    r2 = p2.add_run(quiz.get("title") or quiz.get("topic") or "Quiz")
     _set_run(r2, size=13, bold=True, color=theme["orange"])
 
     _add_para(doc, "", space_after=4)
     _add_info_table(doc, [
-        ("Trường / School", quiz.get("school") or "................................"),
-        ("Khối / Lớp", quiz.get("grade") or ""),
-        ("Môn học", quiz.get("subject") or ""),
-        ("Chủ đề", quiz.get("topic") or ""),
-        ("Thời gian", f"{quiz.get('time_limit_minutes') or 20} phút"),
-        ("Điểm đạt", f"{quiz.get('passing_score') or 60}%"),
+        ("School", quiz.get("school") or "................................"),
+        ("Grade", quiz.get("grade") or ""),
+        ("Subject", quiz.get("subject") or ""),
+        ("Topic", quiz.get("topic") or ""),
+        ("Time", f"{quiz.get('time_limit_minutes') or 20} minutes"),
+        ("Pass score", f"{quiz.get('passing_score') or 60}%"),
     ], theme=theme)
 
     if quiz.get("description"):
@@ -507,10 +526,10 @@ def build_quiz_docx_bytes(quiz: dict) -> bytes:
 
     info = doc.add_table(rows=2, cols=2)
     info.style = "Table Grid"
-    _fill_cell(info.cell(0, 0), "Họ và tên: ................................", size=12)
-    _fill_cell(info.cell(0, 1), "Lớp: ....................", size=12)
-    _fill_cell(info.cell(1, 0), "Ngày làm bài: ........................", size=12)
-    _fill_cell(info.cell(1, 1), "Điểm: .......... / 10", size=12)
+    _fill_cell(info.cell(0, 0), "Full name: ................................", size=12)
+    _fill_cell(info.cell(0, 1), "Class: ....................", size=12)
+    _fill_cell(info.cell(1, 0), "Date: ........................", size=12)
+    _fill_cell(info.cell(1, 1), "Score: .......... / 10", size=12)
     doc.add_paragraph()
 
     questions = quiz.get("questions") or []
@@ -521,9 +540,9 @@ def build_quiz_docx_bytes(quiz: dict) -> bytes:
         c = box.cell(0, 0)
         c.text = ""
         head = c.paragraphs[0]
-        r_no = head.add_run(f"Câu {i}  ")
+        r_no = head.add_run(f"Question {i}  ")
         _set_run(r_no, size=13, bold=True, color=theme["navy"])
-        r_tp = head.add_run(f"({_type_label(qtype)} · {int(q.get('points') or 1)} điểm)")
+        r_tp = head.add_run(f"({_type_label(qtype)} · {int(q.get('points') or 1)} pt)")
         _set_run(r_tp, size=10, italic=True, color=theme["orange"])
         body = c.add_paragraph()
         r_q = body.add_run(q.get("question_text") or "")
@@ -535,11 +554,11 @@ def build_quiz_docx_bytes(quiz: dict) -> bytes:
                 _set_run(rr, size=12, color=GRAY)
         elif qtype == "fill_blank":
             line = c.add_paragraph()
-            rr = line.add_run("Đáp án: ................................")
+            rr = line.add_run("Answer: ................................")
             _set_run(rr, size=12, color=GRAY)
         elif qtype == "true_false":
             line = c.add_paragraph()
-            rr = line.add_run("☐ Đúng          ☐ Sai")
+            rr = line.add_run("☐ True          ☐ False")
             _set_run(rr, size=12, color=theme["navy"])
         else:
             for opt in q.get("options") or []:
@@ -550,17 +569,17 @@ def build_quiz_docx_bytes(quiz: dict) -> bytes:
         doc.add_paragraph()
 
     doc.add_page_break()
-    _add_heading_custom(doc, "ĐÁP ÁN – HƯỚNG DẪN CHẤM (Dành cho giáo viên)", level=1, theme=theme)
+    _add_heading_custom(doc, "ANSWER KEY — FOR TEACHERS / ĐÁP ÁN GV", level=1, theme=theme)
     ans_rows = []
     for i, q in enumerate(questions, 1):
         ans = q.get("correct_answer") or q.get("sample_answer") or "—"
         exp = q.get("explanation") or ""
         ans_rows.append([str(i), _type_label(q.get("question_type")), str(ans), str(exp)])
     if ans_rows:
-        _add_data_table(doc, ["Câu", "Loại", "Đáp án / Ý chính", "Giải thích"], ans_rows, theme=theme)
+        _add_data_table(doc, ["No.", "Type", "Answer / Key points", "Explanation"], ans_rows, theme=theme)
     _add_para(
         doc,
-        "— Teacher Studio · In phát cho học sinh trang 1; giữ trang đáp án cho giáo viên —",
+        "— EduBright · Print page 1 for students; keep the answer key for teachers —",
         size=9, italic=True, color=theme["orange"], align="center", space_before=12,
     )
 

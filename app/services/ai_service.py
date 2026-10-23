@@ -1,5 +1,5 @@
 """
-AI Service – Gemini 2.5 Flash (primary) + OpenAI (fallback) + Local KB (offline)
+AI Service – Gemini Pro/4 (paid) + image models + OpenAI fallback + Local KB
 Priority: Local DB/KB → Gemini API → OpenAI API → Fallback message
 """
 import os
@@ -10,15 +10,52 @@ from flask import current_app
 # Client helpers – REST-based (không phụ thuộc SDK version)
 # ──────────────────────────────────────────────
 
-# Gemini: thử lần lượt, fallback khi quota hết
+# Bản trả phí: Pro/Argon trước, Flash làm dự phòng nếu model chưa mở trên project
 GEMINI_MODELS = [
+    "gemini-4-argon",
+    "gemini-3.1-pro-preview",
+    "gemini-3.1-pro",
+    "gemini-2.5-pro",
+    "gemini-3.8-flash",
     "gemini-2.5-flash",
-    "gemini-2.5-flash-preview-05-20",
-    "gemini-2.0-flash",
-    "gemini-1.5-flash",
+]
+
+GEMINI_IMAGE_MODELS = [
+    "gemini-3-pro-image",
+    "gemini-nano-banana-2.1",
+    "gemini-3.1-flash-image",
+    "gemini-2.5-flash-image",
 ]
 
 GEMINI_REST_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+
+
+def _text_models() -> list[str]:
+    preferred = ""
+    try:
+        preferred = (current_app.config.get("GEMINI_TEXT_MODEL") or os.getenv("GEMINI_TEXT_MODEL") or "").strip()
+    except Exception:
+        preferred = (os.getenv("GEMINI_TEXT_MODEL") or "").strip()
+    models = list(GEMINI_MODELS)
+    if preferred and preferred not in models:
+        models.insert(0, preferred)
+    elif preferred:
+        models = [preferred] + [m for m in models if m != preferred]
+    return models
+
+
+def _image_models() -> list[str]:
+    preferred = ""
+    try:
+        preferred = (current_app.config.get("GEMINI_IMAGE_MODEL") or os.getenv("GEMINI_IMAGE_MODEL") or "").strip()
+    except Exception:
+        preferred = (os.getenv("GEMINI_IMAGE_MODEL") or "").strip()
+    models = list(GEMINI_IMAGE_MODELS)
+    if preferred and preferred not in models:
+        models.insert(0, preferred)
+    elif preferred:
+        models = [preferred] + [m for m in models if m != preferred]
+    return models
 
 
 def _call_gemini(
@@ -43,7 +80,7 @@ def _call_gemini(
     contents.append({"role": "user", "parts": [{"text": prompt}]})
 
     generation_config = {
-        "temperature": 0.4 if json_mode else 0.7,
+        "temperature": 0.25 if json_mode else 0.7,
         "maxOutputTokens": max(256, int(max_output_tokens or 2048)),
     }
     if json_mode:
@@ -52,7 +89,7 @@ def _call_gemini(
     body = {"contents": contents, "generationConfig": generation_config}
     payload = json.dumps(body).encode()
 
-    for model_name in GEMINI_MODELS:
+    for model_name in _text_models():
         url = GEMINI_REST_URL.format(model=model_name, key=api_key)
         try:
             import urllib.request
@@ -68,9 +105,12 @@ def _call_gemini(
                     current_app.logger.warning(f"Gemini empty candidates: {model_name}")
                     continue
                 parts = (candidates[0].get("content") or {}).get("parts") or []
-                text = "".join(p.get("text", "") for p in parts if p.get("text"))
+                text = "".join(p.get("text", "") for p in parts if p.get("text") and not p.get("thought"))
                 if not text:
-                    current_app.logger.warning(f"Gemini empty text: {model_name}")
+                    text = "".join(p.get("text", "") for p in parts if p.get("text"))
+                if not text:
+                    finish = candidates[0].get("finishReason") or candidates[0].get("finish_reason")
+                    current_app.logger.warning(f"Gemini empty text: {model_name} finish={finish}")
                     continue
                 current_app.logger.info(f"Gemini OK: {model_name}")
                 return text
@@ -117,6 +157,82 @@ def _call_gemini(
                 continue
 
     current_app.logger.warning("All Gemini models failed")
+    return None
+
+
+def generate_slide_image(
+    prompt: str,
+    *,
+    aspect_ratio: str = "4:3",
+    timeout: int = 55,
+) -> bytes | None:
+    """Tạo ảnh minh họa bằng Gemini Image (Nano Banana Pro / 2.1). Trả về PNG/JPEG bytes."""
+    import base64
+    import json
+    import urllib.request
+
+    from app.services.secret_store import get_gemini_api_key
+
+    api_key = get_gemini_api_key()
+    if not api_key or not (prompt or "").strip():
+        return None
+
+    configs = [
+        {
+            "responseModalities": ["TEXT", "IMAGE"],
+            "imageConfig": {"aspectRatio": aspect_ratio},
+        },
+        {"responseModalities": ["IMAGE"]},
+        {"responseModalities": ["TEXT", "IMAGE"]},
+    ]
+
+    import urllib.error
+
+    for model_name in _image_models():
+        url = GEMINI_REST_URL.format(model=model_name, key=api_key)
+        skip_model = False
+        for cfg in configs:
+            body = {
+                "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                "generationConfig": cfg,
+            }
+            try:
+                req = urllib.request.Request(
+                    url,
+                    data=json.dumps(body).encode(),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=timeout) as res:
+                    data = json.loads(res.read())
+                parts = ((data.get("candidates") or [{}])[0].get("content") or {}).get("parts") or []
+                for part in parts:
+                    inline = part.get("inlineData") or part.get("inline_data") or {}
+                    raw = inline.get("data")
+                    mime = (inline.get("mimeType") or inline.get("mime_type") or "image/png").lower()
+                    if raw and "image" in mime:
+                        current_app.logger.info(f"Gemini image OK: {model_name}")
+                        return base64.b64decode(raw)
+            except urllib.error.HTTPError as e:
+                body_txt = ""
+                try:
+                    body_txt = e.read().decode("utf-8", "ignore")[:180]
+                except Exception:
+                    pass
+                if e.code == 404:
+                    current_app.logger.warning(f"Gemini image model missing: {model_name}")
+                    skip_model = True
+                    break
+                current_app.logger.warning(f"Gemini image ({model_name} {e.code}): {body_txt or str(e)[:140]}")
+            except Exception as e:
+                err = str(e)
+                if "404" in err or "not found" in err.lower():
+                    current_app.logger.warning(f"Gemini image model missing: {model_name}")
+                    skip_model = True
+                    break
+                current_app.logger.warning(f"Gemini image ({model_name}): {err[:140]}")
+        if skip_model:
+            continue
     return None
 
 
@@ -169,11 +285,11 @@ def _call_ai(
     Returns: (response_text, source_label)
     """
     provider = _get_provider()
-    gemini_timeout = timeout or (90 if json_mode or max_tokens >= 1500 else 30)
+    gemini_timeout = timeout or (120 if json_mode or max_tokens >= 1500 else 45)
     gemini_kwargs = {
         "json_mode": json_mode,
         "timeout": gemini_timeout,
-        "max_output_tokens": max(max_tokens, 1024),
+        "max_output_tokens": max(max_tokens, 8192 if json_mode else 1024),
     }
 
     def _openai_messages():

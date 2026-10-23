@@ -93,6 +93,12 @@ def create_indexes(db):
           [("teacher_id", 1)],
           [("title", "text"), {"name": "resource_text"}],
       ],
+      "library_items": [
+          [("status", 1), ("approved_at", -1)],
+          [("kind", 1), ("status", 1)],
+          [("status", 1), ("subject", 1), ("approved_at", -1)],
+          [("teacher_id", 1), ("kind", 1), ("topic", 1)],
+      ],
       "notifications": [
           [("user_id", 1)],
           [("read", 1)],

@@ -305,7 +305,7 @@ def _fetch_wikimedia_image(query: str, w: int = 900) -> bytes | None:
             "iiurlwidth": str(w),
         })
     )
-    headers = {"User-Agent": "EduBridgeTeacherStudio/1.0 (educational; contact@local)"}
+    headers = {"User-Agent": "EduBrightTeacherStudio/1.0 (educational; contact@local)"}
     try:
         req = urllib.request.Request(api, headers=headers)
         with urllib.request.urlopen(req, timeout=10) as res:
@@ -340,10 +340,65 @@ def json_loads_safe(text: str):
         return None
 
 
-def _related_image_bytes(keyword: str, topic: str = "", title: str = "") -> bytes:
-    """Prefer Vietnam-related Commons photos matching content; else themed illustration."""
+_IMAGE_CACHE: dict[str, bytes] = {}
+
+
+def _image_cache_key(*parts) -> str:
+    blob = "||".join(str(p or "") for p in parts)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _gemini_image_prompt(
+    keyword: str,
+    topic: str = "",
+    title: str = "",
+    bullets: list | None = None,
+    scene: str = "",
+) -> str:
+    details = "; ".join(str(b).strip() for b in (bullets or [])[:4] if str(b).strip())
+    scene = (scene or "").strip() or (keyword or title or topic)
+    return (
+        "Photorealistic educational photograph for a Vietnamese secondary-school PowerPoint slide. "
+        "No text overlay, no watermark, no logos, no captions, no UI. "
+        "Vietnam setting: Vietnamese students or teachers, school uniforms if people appear, "
+        "authentic classroom, schoolyard or local scene matching the topic. "
+        f"Lesson topic: {topic or 'experiential learning'}. "
+        f"Slide title: {title or keyword or topic}. "
+        f"Exact scene: {scene}. "
+        f"Content cues: {details or 'hands-on class activity in Vietnam'}. "
+        "Natural lighting, sharp, classroom-safe, 4:3 composition, high quality."
+    )
+
+
+def _related_image_bytes(
+    keyword: str,
+    topic: str = "",
+    title: str = "",
+    bullets: list | None = None,
+    scene: str = "",
+) -> bytes:
+    """Gemini image first (paid), then Vietnam Commons photos, then themed illustration."""
+    cache_key = _image_cache_key(keyword, topic, title, scene, " | ".join(str(b) for b in (bullets or [])[:4]))
+    cached = _IMAGE_CACHE.get(cache_key)
+    if cached:
+        return cached
+
+    try:
+        from app.services.ai_service import generate_slide_image
+
+        generated = generate_slide_image(
+            _gemini_image_prompt(keyword, topic, title, bullets, scene),
+            aspect_ratio="4:3",
+            timeout=45,
+        )
+        if generated and len(generated) > 2000:
+            _IMAGE_CACHE[cache_key] = generated
+            return generated
+    except Exception:
+        pass
+
     query = _search_query(keyword, topic, title)
-    theme = _theme_key(f"{query} {topic} {title}")
+    theme = _theme_key(f"{query} {topic} {title} {scene}")
     theme_queries = {
         "flag": "vietnam school flag raising ceremony students red flag yellow star",
         "recycle": "vietnam students recycling plastic bottles",
@@ -372,8 +427,11 @@ def _related_image_bytes(keyword: str, topic: str = "", title: str = "") -> byte
         seen.add(key)
         img = _fetch_wikimedia_image(q)
         if img:
+            _IMAGE_CACHE[cache_key] = img
             return img
-    return _make_themed_illustration(keyword, topic, title)
+    fallback = _make_themed_illustration(keyword, topic, title)
+    _IMAGE_CACHE[cache_key] = fallback
+    return fallback
 
 
 def _round_photo(raw: bytes, w: int = 960, h: int = 720, radius: int = 42) -> bytes:
@@ -405,12 +463,30 @@ def _soft_shadow(shape):
         pass
 
 
-def _add_image_or_art(slide, left, top, width, height, keyword: str, topic: str, title: str = "", meta=None):
+def _add_image_or_art(
+    slide,
+    left,
+    top,
+    width,
+    height,
+    keyword: str,
+    topic: str,
+    title: str = "",
+    meta=None,
+    bullets=None,
+    scene: str = "",
+):
     """Place a framed, rounded, content-related photo or themed illustration."""
     from pptx.enum.shapes import MSO_SHAPE
     from pptx.util import Inches
 
-    img = _related_image_bytes(keyword or topic or title, topic, title)
+    img = _related_image_bytes(
+        keyword or topic or title,
+        topic,
+        title,
+        bullets=bullets,
+        scene=scene,
+    )
     pad = int(0.06 * 914400)
     try:
         prepared = _round_photo(img)
@@ -624,6 +700,8 @@ def _layout_title(slide, prs, data, meta):
         data.get("image_keyword") or meta.get("topic"), meta.get("topic"),
         title=data.get("title") or "",
         meta=meta,
+        bullets=data.get("bullets") or [],
+        scene=data.get("image_scene") or "",
     )
     return anim
 
@@ -646,6 +724,8 @@ def _layout_content(slide, prs, data, meta, page, total):
         data.get("image_keyword") or meta.get("topic"), meta.get("topic"),
         title=data.get("title") or "",
         meta=meta,
+        bullets=data.get("bullets") or data.get("left_bullets") or [],
+        scene=data.get("image_scene") or "",
     )
     _footer(slide, prs, page, total, meta.get("topic", ""), meta)
     return [title_box, *bullet_shapes]
@@ -775,6 +855,50 @@ def _layout_closing(slide, prs, data, meta):
     return [t1, t2, t3]
 
 
+def _prefetch_slide_images(slides: list, topic: str) -> None:
+    """Generate Gemini images in parallel for photo slides so export stays within timeout."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    try:
+        from flask import current_app, has_app_context
+        if not has_app_context():
+            return
+        app = current_app._get_current_object()
+    except Exception:
+        return
+
+    jobs = []
+    seen = set()
+    for slide in slides or []:
+        layout = str((slide or {}).get("layout") or "").lower()
+        if layout not in ("title", "content", ""):
+            continue
+        keyword = (slide or {}).get("image_keyword") or topic
+        title = (slide or {}).get("title") or ""
+        scene = (slide or {}).get("image_scene") or ""
+        bullets = tuple((slide or {}).get("bullets") or (slide or {}).get("left_bullets") or [])[:4]
+        item = (keyword, topic, title, bullets, scene)
+        if item in seen:
+            continue
+        seen.add(item)
+        jobs.append(item)
+    if not jobs:
+        return
+
+    def _run(item):
+        keyword, topic_name, title, bullets, scene = item
+        with app.app_context():
+            _related_image_bytes(
+                keyword, topic_name, title,
+                bullets=list(bullets),
+                scene=scene,
+            )
+
+    workers = min(4, len(jobs))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        list(pool.map(_run, jobs))
+
+
 def build_rich_pptx_bytes(deck: dict) -> bytes:
     from pptx import Presentation
     from pptx.util import Inches
@@ -795,6 +919,7 @@ def build_rich_pptx_bytes(deck: dict) -> bytes:
     if not slides:
         slides = [{"layout": "title", "title": meta["topic"], "subtitle": meta["subject"], "bullets": []}]
 
+    _prefetch_slide_images(slides, meta["topic"])
     total = len(slides)
     for idx, raw in enumerate(slides):
         data = dict(raw or {})

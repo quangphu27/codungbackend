@@ -60,7 +60,7 @@ def create_app(config_class=Config):
 
     @app.route("/api/health")
     def health():
-        return jsonify({"status": "ok", "app": "Experiential Learning API"})
+        return jsonify({"status": "ok", "app": "EduBright API"})
 
     @app.errorhandler(RequestEntityTooLarge)
     def file_too_large(e):

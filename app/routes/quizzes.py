@@ -95,9 +95,23 @@ def normalize_quiz_questions(questions):
             })
             continue
         opts = [str(o).strip() for o in (q.get("options") or []) if str(o).strip()]
-        if q_type == "true_false" and not opts:
-            opts = ["Đúng", "Sai"]
         correct = str(q.get("correct_answer") or "").strip()
+        if q_type == "true_false":
+            mapped = []
+            for o in opts:
+                low = o.lower().strip()
+                if low in ("đúng", "dung", "true", "yes", "1"):
+                    mapped.append("True")
+                elif low in ("sai", "false", "no", "0"):
+                    mapped.append("False")
+                else:
+                    mapped.append(o)
+            opts = mapped or ["True", "False"]
+            cl = correct.lower().strip()
+            if cl in ("đúng", "dung", "true", "yes", "1"):
+                correct = "True"
+            elif cl in ("sai", "false", "no", "0"):
+                correct = "False"
         if opts and correct and correct not in opts:
             letter = correct[0].upper() if correct else ""
             matched = None
@@ -246,6 +260,7 @@ def _replace_lesson_quiz(db, lesson_id, teacher_id, data, role: str = "teacher")
         "max_attempts": int(data.get("max_attempts", 3)),
         "passing_score": int(data.get("passing_score", 60)),
         "hide_answers": True,
+        "language": data.get("language") or "en",
         "created_at": utc_now(),
         "updated_at": utc_now(),
         "source": data.get("source") or "manual",

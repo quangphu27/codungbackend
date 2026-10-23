@@ -57,6 +57,7 @@ def _base_payload():
         "topic": (data.get("topic") or "").strip(),
         "description": (data.get("description") or data.get("mo_ta") or "").strip(),
         "language": data.get("language") or "bilingual",
+        # kinds use fixed languages: lesson bilingual, quiz English, slides EN + notes VI
         "extra_requirements": data.get("extra_requirements") or data.get("requirements") or "",
         "theme_color": (data.get("theme_color") or data.get("primary_color") or "#0F2744").strip(),
         "theme_accent": (data.get("theme_accent") or data.get("accent_color") or "#F39C4A").strip(),
@@ -98,7 +99,7 @@ def studio_status():
     return jsonify({
         "gemini_configured": configured,
         "message": (
-            "Gemini sẵn sàng"
+            "Gemini Pro sẵn sàng — giáo án, đề và ảnh slide sát nội dung"
             if configured
             else "Chưa có API key Gemini. Admin hãy nhập key tại Cài đặt AI."
         ),
@@ -193,6 +194,188 @@ def generate_pptx():
         draft = _save_draft(db, user_id, "pptx", payload, deck)
 
     return jsonify({"deck": deck, "draft": draft})
+
+
+@studio_bp.route("/generate/eight-step", methods=["POST"])
+@jwt_required()
+@teacher_required
+def generate_eight_step():
+    payload = _base_payload()
+    if not payload["topic"]:
+        return jsonify({"message": "Vui lòng nhập chủ đề"}), 400
+    eight = studio_service.generate_eight_step_draft(
+        grade=payload["grade"],
+        subject=payload["subject"],
+        topic=payload["topic"],
+        description=payload["description"],
+        extra_requirements=payload["extra_requirements"],
+        lesson_context=payload.get("lesson"),
+        quiz_context=payload.get("quiz"),
+    )
+    draft = None
+    if payload["save"]:
+        db = get_db()
+        user_id = to_object_id(get_jwt_identity())
+        draft = _save_draft(db, user_id, "eight_step", payload, eight)
+    return jsonify({"eight_step": eight, "draft": draft})
+
+
+@studio_bp.route("/save-eight-step", methods=["POST"])
+@jwt_required()
+@teacher_required
+def save_eight_step():
+    """Lưu bài học 8 bước (bản nháp) giống /teacher/lessons — có thể sửa tiếp."""
+    from app.routes.lessons import SECTION_TYPES
+    from app.routes.quizzes import _replace_lesson_quiz, normalize_quiz_questions
+
+    data = request.get_json() or {}
+    eight = data.get("eight_step") or data.get("content")
+    if not isinstance(eight, dict):
+        return jsonify({"message": "Thiếu nội dung bài học 8 bước"}), 400
+
+    class_id = data.get("class_id")
+    subject_id = data.get("subject_id")
+    if not class_id or not subject_id:
+        return jsonify({"message": "Chọn lớp học và môn học trước khi lưu"}), 400
+
+    db = get_db()
+    teacher_id = to_object_id(get_jwt_identity())
+    class_oid = to_object_id(class_id)
+    subject_oid = to_object_id(subject_id)
+    if not class_oid:
+        return jsonify({"message": "Lớp học không hợp lệ"}), 400
+    if not subject_oid:
+        return jsonify({"message": "Môn học không hợp lệ"}), 400
+    cls = db.classes.find_one({"_id": class_oid})
+    if not cls:
+        return jsonify({"message": "Không tìm thấy lớp học"}), 404
+    if not db.subjects.find_one({"_id": subject_oid}):
+        return jsonify({"message": "Không tìm thấy môn học"}), 404
+    owner = cls.get("teacher_id")
+    role = get_jwt().get("role", "teacher")
+    if role != "super_admin" and str(owner) != str(teacher_id):
+        return jsonify({"message": "Bạn không có quyền lưu vào lớp này"}), 403
+
+    title = (eight.get("title") or data.get("topic") or "Lesson").strip()
+    try:
+        duration = int(eight.get("duration_minutes") or 45)
+    except (TypeError, ValueError):
+        duration = 45
+    try:
+        order = int(data.get("order") or 1)
+    except (TypeError, ValueError):
+        order = 1
+    video = eight.get("video") if isinstance(eight.get("video"), dict) else {}
+    video = {
+        **video,
+        "subtitles": studio_service.normalize_subtitles(video.get("subtitles")),
+    }
+    lesson = {
+        "title": title,
+        "description": (eight.get("description") or data.get("description") or "").strip(),
+        "class_id": class_oid,
+        "subject_id": subject_oid,
+        "teacher_id": teacher_id,
+        "thumbnail": None,
+        "order": order,
+        "status": "draft",
+        "featured": False,
+        "duration_minutes": duration,
+        "source": eight.get("source") or "ai",
+        "created_at": utc_now(),
+        "updated_at": utc_now(),
+    }
+    lesson_id = db.lessons.insert_one(lesson).inserted_id
+
+    section_content = {
+        "warm_up": eight.get("warm_up") or {},
+        "vocabulary": {},
+        "reading": eight.get("reading") or {},
+        "video": video,
+        "interactive": eight.get("interactive") or {},
+        "practice": eight.get("practice") or {},
+        "reflection": eight.get("reflection") or {},
+        "quiz": {},
+    }
+    section_ids = {}
+    for i, section_type in enumerate(SECTION_TYPES):
+        content = section_content.get(section_type) or {}
+        filled = bool(content) and any(v not in (None, "", [], {}) for v in (content.values() if isinstance(content, dict) else [content]))
+        if section_type in ("vocabulary", "quiz"):
+            filled = False
+        inserted = db.lesson_sections.insert_one({
+            "lesson_id": lesson_id,
+            "section_type": section_type,
+            "title": section_type.replace("_", " ").title(),
+            "content": content if section_type not in ("vocabulary", "quiz") else {},
+            "order": i + 1,
+            "status": "completed" if filled else "empty",
+            "created_at": utc_now(),
+        })
+        section_ids[section_type] = str(inserted.inserted_id)
+
+    for v in eight.get("vocabulary") or []:
+        if not isinstance(v, dict) or not str(v.get("word") or "").strip():
+            continue
+        db.vocabularies.insert_one({
+            "word": str(v.get("word") or "").strip(),
+            "ipa": str(v.get("ipa") or ""),
+            "pronunciation_audio": None,
+            "meaning_vi": str(v.get("meaning_vi") or ""),
+            "example_sentence": str(v.get("example_sentence") or ""),
+            "example_translation": "",
+            "image": None,
+            "category": str(v.get("category") or "school_life"),
+            "difficulty": str(v.get("difficulty") or "beginner"),
+            "lesson_id": lesson_id,
+            "created_by": teacher_id,
+            "created_at": utc_now(),
+            "updated_at": utc_now(),
+        })
+
+    quiz_block = eight.get("quiz") or {}
+    questions = normalize_quiz_questions(quiz_block.get("questions") or [])
+    quiz_id = None
+    if questions:
+        quiz_data, err = _replace_lesson_quiz(
+            db,
+            str(lesson_id),
+            teacher_id,
+            {
+                "title": quiz_block.get("title") or f"Quiz: {title}",
+                "class_id": str(class_oid),
+                "time_limit_minutes": quiz_block.get("time_limit_minutes") or 20,
+                "passing_score": quiz_block.get("passing_score") or 60,
+                "questions": questions,
+                "source": eight.get("source") or "ai",
+                "language": "en",
+            },
+            role=role,
+        )
+        if not err:
+            quiz_id = quiz_data.get("id")
+            db.lesson_sections.update_one(
+                {"lesson_id": lesson_id, "section_type": "quiz"},
+                {"$set": {"status": "completed", "updated_at": utc_now()}},
+            )
+
+    if eight.get("vocabulary"):
+        db.lesson_sections.update_one(
+            {"lesson_id": lesson_id, "section_type": "vocabulary"},
+            {"$set": {"status": "completed", "updated_at": utc_now()}},
+        )
+
+    db.classes.update_one({"_id": class_oid}, {"$addToSet": {"lesson_ids": lesson_id}})
+
+    lesson["_id"] = lesson_id
+    return jsonify({
+        "message": "Đã lưu bài học 8 bước (bản nháp). Có thể chỉnh sửa tiếp.",
+        "lesson": serialize_doc(lesson),
+        "section_ids": section_ids,
+        "quiz_id": quiz_id,
+        "edit_path": f"/teacher/lessons/{lesson_id}/edit",
+        "view_path": f"/lessons/{lesson_id}",
+    }), 201
 
 
 @studio_bp.route("/export/docx", methods=["POST"])
@@ -301,7 +484,7 @@ def attach_ai_quiz():
             topic=topic,
             num_questions=int(data.get("num_questions") or 8),
             difficulty=data.get("difficulty") or "mixed",
-            language=data.get("language") or "bilingual",
+            language="en",
             description=(data.get("description") or "").strip(),
             extra_requirements=data.get("extra_requirements") or "",
             quiz_types=_quiz_types(data),
@@ -317,6 +500,7 @@ def attach_ai_quiz():
         "passing_score": quiz_draft.get("passing_score", 60),
         "questions": quiz_draft.get("questions") or [],
         "source": quiz_draft.get("source") or "ai",
+        "language": "en",
         "max_attempts": data.get("max_attempts", 3),
         "randomize": data.get("randomize", True),
     }
@@ -382,6 +566,7 @@ def publish_quiz():
         "grade": payload["grade"],
         "subject": payload["subject"],
         "topic": payload["topic"] or quiz_draft.get("topic"),
+        "language": "en",
         "description": payload["description"] or quiz_draft.get("description") or "",
         "theme_color": payload["theme_color"],
         "theme_accent": payload["theme_accent"],
@@ -413,3 +598,241 @@ def publish_quiz():
         "student_path": f"/quiz/{qid}",
         "grade_path": f"/teacher/quizzes/{qid}",
     }), 201
+
+
+KIND_LABELS = {"lesson": "Giáo án", "quiz": "Đề kiểm tra", "pptx": "PowerPoint"}
+
+
+def _norm_subject(name: str) -> str:
+    text = " ".join(str(name or "").split())
+    return text or "Khác"
+
+
+def _library_subjects(db, extra_query: dict | None = None):
+    match = {"status": "approved"}
+    if extra_query:
+        match.update(extra_query)
+    pipeline = [
+        {"$match": match},
+        {"$group": {
+            "_id": {
+                "$cond": [
+                    {"$or": [
+                        {"$eq": [{"$ifNull": ["$subject", ""]}, ""]},
+                        {"$eq": ["$subject", None]},
+                    ]},
+                    "Khác",
+                    "$subject",
+                ]
+            },
+            "total": {"$sum": 1},
+            "lesson": {"$sum": {"$cond": [{"$eq": ["$kind", "lesson"]}, 1, 0]}},
+            "quiz": {"$sum": {"$cond": [{"$eq": ["$kind", "quiz"]}, 1, 0]}},
+            "pptx": {"$sum": {"$cond": [{"$eq": ["$kind", "pptx"]}, 1, 0]}},
+        }},
+        {"$sort": {"_id": 1}},
+    ]
+    rows = []
+    for row in db.library_items.aggregate(pipeline):
+        name = _norm_subject(row.get("_id"))
+        rows.append({
+            "name": name,
+            "total": int(row.get("total") or 0),
+            "lesson": int(row.get("lesson") or 0),
+            "quiz": int(row.get("quiz") or 0),
+            "pptx": int(row.get("pptx") or 0),
+        })
+    return rows
+
+
+def _library_title(kind: str, content: dict, topic: str) -> str:
+    if kind == "lesson":
+        return (content.get("title_vi") or content.get("title_en") or content.get("title") or topic or "Giáo án").strip()
+    if kind == "quiz":
+        return (content.get("title") or topic or "Quiz").strip()
+    return (content.get("title") or topic or "Slides").strip()
+
+
+def _library_summary(item: dict) -> dict:
+    data = serialize_doc(item) or {}
+    data.pop("content", None)
+    return data
+
+
+@studio_bp.route("/library", methods=["GET"])
+@jwt_required()
+@teacher_required
+def list_library():
+    db = get_db()
+    kind = (request.args.get("kind") or "").strip()
+    search = (request.args.get("search") or "").strip()
+    subject = _norm_subject(request.args.get("subject") or "")
+    if subject == "Khác" and not (request.args.get("subject") or "").strip():
+        subject = ""
+    page = max(1, int(request.args.get("page") or 1))
+    limit = min(24, max(6, int(request.args.get("limit") or 12)))
+    query = {"status": "approved"}
+    if kind in KIND_LABELS:
+        query["kind"] = kind
+    filters = []
+    if subject:
+        if subject.lower() == "khác":
+            filters.append({"$or": [
+                {"subject": {"$in": ["", "Khác"]}},
+                {"subject": {"$exists": False}},
+                {"subject": None},
+            ]})
+        else:
+            filters.append({"subject": {"$regex": f"^{re.escape(subject)}$", "$options": "i"}})
+    if search:
+        filters.append({"$or": [
+            {"title": {"$regex": search, "$options": "i"}},
+            {"topic": {"$regex": search, "$options": "i"}},
+            {"subject": {"$regex": search, "$options": "i"}},
+            {"teacher_name": {"$regex": search, "$options": "i"}},
+        ]})
+    if filters:
+        query["$and"] = filters
+    extra = {}
+    if kind in KIND_LABELS:
+        extra["kind"] = kind
+    if search:
+        extra["$or"] = filters[-1]["$or"]
+    subjects = _library_subjects(db, extra or None)
+    total = db.library_items.count_documents(query)
+    items = list(
+        db.library_items.find(query, {"content": 0})
+        .sort("approved_at", -1)
+        .skip((page - 1) * limit)
+        .limit(limit)
+    )
+    return jsonify({
+        "data": serialize_doc(items),
+        "subjects": subjects,
+        "subject": subject,
+        "total": total,
+        "page": page,
+        "pages": max(1, (total + limit - 1) // limit),
+    })
+
+
+@studio_bp.route("/library", methods=["POST"])
+@jwt_required()
+@teacher_required
+def publish_to_library():
+    """Giáo viên duyệt học liệu AI và đưa vào Kho cho đồng nghiệp xem/tải."""
+    payload = _base_payload()
+    data = request.get_json() or {}
+    kind = (data.get("kind") or "").strip()
+    if kind not in KIND_LABELS:
+        return jsonify({"message": "kind phải là lesson, quiz hoặc pptx"}), 400
+    content = data.get("content")
+    if not content:
+        content = payload.get("lesson" if kind == "lesson" else "quiz" if kind == "quiz" else "deck")
+    if not content or not isinstance(content, dict):
+        return jsonify({"message": "Thiếu nội dung học liệu để duyệt vào kho"}), 400
+
+    db = get_db()
+    teacher_id = to_object_id(get_jwt_identity())
+    user = db.users.find_one({"_id": teacher_id}) or {}
+    teacher_name = user.get("full_name") or user.get("name") or "Giáo viên"
+    topic = payload["topic"] or content.get("topic") or ""
+    title = _library_title(kind, content, topic)
+    now = utc_now()
+    doc = {
+        "kind": kind,
+        "title": title,
+        "topic": topic,
+        "grade": payload["grade"] or content.get("grade") or "",
+        "subject": _norm_subject(payload["subject"] or content.get("subject") or ""),
+        "description": payload["description"] or content.get("description") or "",
+        "language": "en" if kind == "quiz" else ("en+vi-notes" if kind == "pptx" else "bilingual"),
+        "ai_source": content.get("source") or "ai",
+        "status": "approved",
+        "teacher_id": teacher_id,
+        "teacher_name": teacher_name,
+        "content": content,
+        "approved_by": teacher_id,
+        "approved_at": now,
+        "created_at": now,
+        "updated_at": now,
+    }
+    existing = db.library_items.find_one({
+        "teacher_id": teacher_id,
+        "kind": kind,
+        "topic": topic,
+        "status": "approved",
+    })
+    if existing:
+        db.library_items.update_one(
+            {"_id": existing["_id"]},
+            {"$set": {k: v for k, v in doc.items() if k != "created_at"}},
+        )
+        existing.update(doc)
+        existing["created_at"] = existing.get("created_at") or now
+        return jsonify({
+            "message": "Đã cập nhật học liệu trong Kho",
+            "item": _library_summary(existing),
+        })
+
+    result = db.library_items.insert_one(doc)
+    doc["_id"] = result.inserted_id
+    return jsonify({
+        "message": "Đã duyệt và đưa vào Kho học liệu",
+        "item": _library_summary(doc),
+    }), 201
+
+
+@studio_bp.route("/library/<item_id>", methods=["GET"])
+@jwt_required()
+@teacher_required
+def library_detail(item_id):
+    db = get_db()
+    item = db.library_items.find_one({"_id": to_object_id(item_id), "status": "approved"})
+    if not item:
+        return jsonify({"message": "Không tìm thấy học liệu"}), 404
+    return jsonify(serialize_doc(item))
+
+
+@studio_bp.route("/library/<item_id>/download", methods=["GET"])
+@jwt_required()
+@teacher_required
+def library_download(item_id):
+    db = get_db()
+    item = db.library_items.find_one({"_id": to_object_id(item_id), "status": "approved"})
+    if not item:
+        return jsonify({"message": "Không tìm thấy học liệu"}), 404
+    content = item.get("content") or {}
+    kind = item.get("kind")
+    if kind == "lesson":
+        blob = studio_service.build_docx_bytes(content)
+        mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        filename = _safe_download_name(item.get("title"), "giao_an", ".docx")
+    elif kind == "quiz":
+        blob = studio_service.quiz_to_docx_bytes(content)
+        mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        filename = _safe_download_name(item.get("title"), "quiz", ".docx")
+    elif kind == "pptx":
+        blob = studio_service.build_pptx_bytes(content)
+        mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        filename = _safe_download_name(item.get("title"), "slide", ".pptx")
+    else:
+        return jsonify({"message": "Loại học liệu không hỗ trợ tải"}), 400
+    return send_file(io.BytesIO(blob), mimetype=mime, as_attachment=True, download_name=filename)
+
+
+@studio_bp.route("/library/<item_id>", methods=["DELETE"])
+@jwt_required()
+@teacher_required
+def library_delete(item_id):
+    db = get_db()
+    teacher_id = to_object_id(get_jwt_identity())
+    role = get_jwt().get("role", "teacher")
+    item = db.library_items.find_one({"_id": to_object_id(item_id)})
+    if not item:
+        return jsonify({"message": "Không tìm thấy học liệu"}), 404
+    owner = item.get("teacher_id")
+    if role != "super_admin" and str(owner) != str(teacher_id):
+        return jsonify({"message": "Chỉ người đăng hoặc admin mới được xóa"}), 403
+    db.library_items.delete_one({"_id": item["_id"]})
+    return jsonify({"message": "Đã xóa khỏi Kho học liệu"})

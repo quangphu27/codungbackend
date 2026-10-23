@@ -50,6 +50,8 @@ class Config:
 
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+    GEMINI_TEXT_MODEL = os.getenv("GEMINI_TEXT_MODEL", "")
+    GEMINI_IMAGE_MODEL = os.getenv("GEMINI_IMAGE_MODEL", "")
     AI_PROVIDER = os.getenv("AI_PROVIDER", "gemini")  # 'gemini' hoặc 'openai'
     FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
     CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",")
