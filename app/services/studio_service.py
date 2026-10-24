@@ -71,10 +71,17 @@ def _is_math_topic(subject: str = "", topic: str = "") -> bool:
     return any(k in blob for k in keys)
 
 
+def _is_literature_subject(subject: str = "") -> bool:
+    blob = _fold_text(subject or "")
+    return any(k in blob for k in ("ngu van", "van hoc", "literature"))
+
+
 def _is_literature_topic(subject: str = "", topic: str = "") -> bool:
-    blob = _fold_text(f"{subject} {topic}")
+    """Chủ đề/tác phẩm văn học (không chỉ vì môn là Ngữ văn)."""
+    blob = _fold_text(f"{topic or ''} {subject or ''}")
     return any(k in blob for k in (
-        "ngu van", "van hoc", "literature", "truyen kieu", "nguyen du", "tac pham",
+        "truyen kieu", "nguyen du", "tac pham", "tho ", "van ban", "truyen ngan",
+        "chi tiet", "nhan vat", "the tho", "doc hieu",
     ))
 
 
@@ -112,7 +119,8 @@ TIẾN TRÌNH DẠY HỌC (Chương trình GDPT 2018 — đúng 4 hoạt động
 
 def _subject_gdpt_terminology(grade: str, subject: str, topic: str) -> str:
     blob = _fold_text(f"{subject} {topic}")
-    if _is_literature_topic(subject, topic) or _is_kieu_topic(subject, topic):
+    profile = _subject_profile_key(subject, topic)
+    if profile in ("literature_kieu", "literature") or _is_kieu_topic(subject, topic):
         return f"""
 THUẬT NGỮ NGỮ VĂN (GDPT 2018): tác giả, hoàn cảnh sáng tác, thể loại, thể thơ, nhân vật, xung đột,
 chủ đề, tư tưởng, nghệ thuật (biện pháp tu từ, hình ảnh), đọc hiểu, phân tích, cảm thụ.
@@ -199,6 +207,231 @@ def _normalize_gdpt_sections(sections: list | None) -> list[dict]:
     return out
 
 
+# Danh mục môn Teacher Studio — mỗi môn có gợi ý chuẩn GDPT 2018 (dùng cho AI + fallback).
+STUDIO_GDPT_SUBJECTS = (
+    "Ngữ văn", "Tiếng Anh", "Toán", "Lịch sử", "Địa lý", "Giáo dục công dân",
+    "Vật lý", "Hóa học", "Sinh học", "Khoa học tự nhiên", "Công nghệ", "Tin học",
+    "Giáo dục thể chất", "Mĩ thuật", "Âm nhạc", "Hoạt động trải nghiệm",
+)
+
+
+def _subject_profile_key(subject: str, topic: str = "") -> str:
+    b = _fold_text(subject or "")
+    if _is_experiential_subject(subject):
+        return "experiential"
+    if _is_kieu_topic(subject, topic):
+        return "literature_kieu"
+    if _is_literature_subject(subject):
+        return "literature"
+    if _is_math_topic(subject, topic) or "toan" in b:
+        return "math"
+    if any(k in b for k in ("tieng anh", "english", "anh van")):
+        return "english"
+    if "lich su" in b or "history" in b:
+        return "history"
+    if "dia ly" in b or "geography" in b:
+        return "geography"
+    if any(k in b for k in ("cong dan", "gdcd", "civic")):
+        return "civic"
+    if "vat ly" in b or "physics" in b:
+        return "physics"
+    if "hoa hoc" in b or "chemistry" in b:
+        return "chemistry"
+    if "sinh hoc" in b or "biology" in b:
+        return "biology"
+    if "khoa hoc tu nhien" in b or "natural science" in b:
+        return "natural_science"
+    if "cong nghe" in b or "technology" in b:
+        return "technology"
+    if "tin hoc" in b or "informatics" in b or "computer" in b:
+        return "informatics"
+    if any(k in b for k in ("the duc", "the chat", "pe ", "physical")):
+        return "pe"
+    if "mi thuat" in b or "art" in b:
+        return "art"
+    if "am nhac" in b or "music" in b:
+        return "music"
+    return "general"
+
+
+def _gdpt_stage_contents(profile: str, grade: str, subject: str, topic: str) -> list[dict]:
+    """Nội dung 4 hoạt động theo đúng tính chất môn (fallback + kiểm tra)."""
+    t, g, s = topic, grade, subject
+    packs = {
+        "literature_kieu": [
+            (f"Hỏi kiến thức nền về “{t}”: tác giả, thể loại.", f"Ask prior knowledge about “{t}”: author and genre."),
+            (f"Giảng kiến thức tác phẩm “{t}”: tác giả, thể thơ, nhân vật, chủ đề.", f"Teach work knowledge: author, form, characters, themes."),
+            (f"Đọc hiểu / phiếu nhân vật – sự kiện sát “{t}”.", f"Close reading worksheet on “{t}”."),
+            (f"Viết đoạn phân tích chủ đề hoặc nhân vật trong “{t}”.", f"Write a short analysis of “{t}”."),
+        ],
+        "literature": [
+            (f"Kết nối bài cũ; hỏi HS biết gì về “{t}”.", f"Link to prior lessons; elicit knowledge of “{t}”."),
+            (f"Hình thành kiến thức: tác giả, bối cảnh, nội dung, nghệ thuật của “{t}”.", f"Teach author, context, content and style of “{t}”."),
+            (f"Luyện đọc hiểu / phân tích đoạn trích “{t}”.", f"Practice comprehension and analysis of “{t}”."),
+            (f"Vận dụng: liên hệ ý nghĩa “{t}” với đời sống / viết 5–7 câu.", f"Apply the meaning of “{t}” in a short writing task."),
+        ],
+        "math": [
+            (f"Ôn khái niệm liên quan; nêu bài toán mở đầu về “{t}”.", f"Review related ideas; pose an opening problem on “{t}”."),
+            (f"Giảng định nghĩa, công thức, ví dụ minh họa “{t}” ({g}).", f"Teach definition, formula and worked example of “{t}”."),
+            (f"Luyện tập: 3–5 bài tính đúng mức {g}.", f"Practice: 3–5 calculation exercises at {g} level."),
+            (f"Vận dụng: bài toán thực tế / bài nâng cao ngắn về “{t}”.", f"Apply “{t}” to a contextual or extended problem."),
+        ],
+        "english": [
+            (f"Warm-up: từ vựng / cấu trúc liên quan “{t}”.", f"Warm-up: vocabulary or grammar linked to “{t}”."),
+            (f"Dạy ngôn ngữ mục tiêu của bài “{t}” (lexis / grammar / function).", f"Teach the target language of “{t}”."),
+            (f"Controlled practice: bài tập nói/viết ngắn về “{t}”.", f"Controlled speaking/writing practice on “{t}”."),
+            (f"Freer practice: tình huống giao tiếp sử dụng “{t}”.", f"Communicative task using “{t}”."),
+        ],
+        "history": [
+            (f"Đặt vấn đề lịch sử về “{t}”; xem tranh / bản đồ.", f"Pose the historical question on “{t}”; use a visual source."),
+            (f"Hình thành: thời gian, không gian, diễn biến, ý nghĩa “{t}”.", f"Teach time, place, course and significance of “{t}”."),
+            (f"Luyện tập: trắc nghiệm / sơ đồ tư duy sự kiện “{t}”.", f"Practice: quiz or mind map of “{t}”."),
+            (f"Vận dụng: tại sao “{t}” quan trọng với Việt Nam / thế giới?", f"Apply: why “{t}” matters today."),
+        ],
+        "geography": [
+            (f"Khởi động: vị trí / hiện tượng liên quan “{t}”.", f"Warm-up: location or phenomenon of “{t}”."),
+            (f"Giảng khái niệm, đặc điểm, biểu đồ/bản đồ “{t}”.", f"Teach concepts, features and maps of “{t}”."),
+            (f"Luyện đọc bản đồ / biểu đồ / số liệu “{t}”.", f"Practice reading maps or data on “{t}”."),
+            (f"Vận dụng: tình huống địa lý thực tế về “{t}”.", f"Apply “{t}” to a real geographic situation."),
+        ],
+        "civic": [
+            (f"Khởi động: tình huống đời sống liên quan “{t}”.", f"Warm-up: real-life situation about “{t}”."),
+            (f"Giảng khái niệm, quy định, giá trị trong “{t}”.", f"Teach concepts, rules and values in “{t}”."),
+            (f"Thảo luận / xử lý tình huống “{t}”.", f"Discuss or resolve a case study on “{t}”."),
+            (f"Vận dụng: lựa chọn hành vi đúng theo “{t}”.", f"Apply “{t}” to choose responsible behaviour."),
+        ],
+        "physics": [
+            (f"Quan sát hiện tượng mở đầu “{t}”.", f"Observe the opening phenomenon of “{t}”."),
+            (f"Giảng định luật, công thức, đơn vị SI của “{t}”.", f"Teach law, formula and SI units for “{t}”."),
+            (f"Luyện giải bài tập có số liệu “{t}”.", f"Practice numerical problems on “{t}”."),
+            (f"Vận dụng: thí nghiệm / bài toán thực tế “{t}”.", f"Apply “{t}” in an experiment or real problem."),
+        ],
+        "chemistry": [
+            (f"Khởi động: hiện tượng hóa học liên quan “{t}”.", f"Warm-up: chemical phenomenon linked to “{t}”."),
+            (f"Giảng khái niệm, phương trình, quy tắc “{t}”.", f"Teach concepts, equations and rules of “{t}”."),
+            (f"Luyện cân bằng / tính toán mol “{t}”.", f"Practice balancing and mole calculations for “{t}”."),
+            (f"Vận dụng: bài tập tổng hợp “{t}”.", f"Apply “{t}” in a synthesis exercise."),
+        ],
+        "biology": [
+            (f"Khởi động: quan sát mẫu / tranh “{t}”.", f"Warm-up: observe a specimen or diagram of “{t}”."),
+            (f"Giảng quá trình, cấu trúc, chức năng “{t}”.", f"Teach process, structure and function of “{t}”."),
+            (f"Luyện sơ đồ / bài tập trắc nghiệm “{t}”.", f"Practice diagrams or MCQ on “{t}”."),
+            (f"Vận dụng: bảo vệ môi trường / sức khỏe liên quan “{t}”.", f"Apply “{t}” to health or environment."),
+        ],
+        "natural_science": [
+            (f"Khởi động: câu hỏi hiện tượng “{t}”.", f"Warm-up question on phenomenon “{t}”."),
+            (f"Giảng kiến thức cốt lõi và thí nghiệm “{t}”.", f"Teach core knowledge and experiment for “{t}”."),
+            (f"Luyện tập tính toán / quan sát “{t}”.", f"Practice calculation or observation on “{t}”."),
+            (f"Vận dụng STEM ngắn về “{t}”.", f"Short STEM application of “{t}”."),
+        ],
+        "technology": [
+            (f"Khởi động: sản phẩm / quy trình liên quan “{t}”.", f"Warm-up: product or process linked to “{t}”."),
+            (f"Giảng nguyên lý, quy trình, an toàn “{t}”.", f"Teach principles, procedure and safety for “{t}”."),
+            (f"Thực hành mô phỏng / phiếu thao tác “{t}”.", f"Simulated practice worksheet on “{t}”."),
+            (f"Vận dụng: thiết kế / cải tiến sản phẩm “{t}”.", f"Apply “{t}” in a small design task."),
+        ],
+        "informatics": [
+            (f"Khởi động: bài toán / ứng dụng “{t}”.", f"Warm-up problem or app related to “{t}”."),
+            (f"Giảng khái niệm, thuật toán, cú pháp “{t}”.", f"Teach concepts, algorithm or syntax of “{t}”."),
+            (f"Luyện trên máy / pseudocode “{t}”.", f"Practice on computer or pseudocode for “{t}”."),
+            (f"Vận dụng: mini-project “{t}”.", f"Apply “{t}” in a mini project."),
+        ],
+        "pe": [
+            (f"Khởi động: chạy nhẹ, xoay khớp; nêu mục tiêu “{t}”.", f"Light run and joint rotation; state goals of “{t}”."),
+            (f"Hướng dẫn kỹ thuật động tác “{t}”.", f"Demonstrate techniques of “{t}”."),
+            (f"Luyện tập theo nhóm / trạm “{t}”.", f"Station practice of “{t}”."),
+            (f"Vận dụng: trò chơi vận động / thi đua ngắn “{t}”.", f"Apply “{t}” in a short game or relay."),
+        ],
+        "art": [
+            (f"Quan sát tác phẩm mẫu liên quan “{t}”.", f"Observe sample artworks about “{t}”."),
+            (f"Giảng yếu tố mỹ thuật, quy trình tạo hình “{t}”.", f"Teach art elements and process for “{t}”."),
+            (f"Thực hành phác / tô màu “{t}”.", f"Practice sketching or colouring “{t}”."),
+            (f"Vận dụng: hoàn thiện sản phẩm & trưng bày “{t}”.", f"Finish and present artwork on “{t}”."),
+        ],
+        "music": [
+            (f"Nghe mẫu / hát khởi động liên quan “{t}”.", f"Listen or sing a warm-up linked to “{t}”."),
+            (f"Dạy nốt, nhịp, kỹ thuật biểu diễn “{t}”.", f"Teach notes, rhythm and performance skills for “{t}”."),
+            (f"Luyện tập cá nhân / nhóm “{t}”.", f"Rehearse “{t}” in pairs or groups."),
+            (f"Vận dụng: trình diễn ngắn bài “{t}”.", f"Perform a short piece on “{t}”."),
+        ],
+        "experiential": [
+            (f"Khởi động: chia sẻ trải nghiệm liên quan chủ đề “{t}”.", f"Share prior experiences about “{t}”."),
+            (f"Tìm hiểu mục tiêu, kỹ năng, quy trình trải nghiệm “{t}”.", f"Learn goals, skills and steps for “{t}”."),
+            (f"Thực hành hoạt động trải nghiệm “{t}”.", f"Carry out the experiential activity “{t}”."),
+            (f"Phản ánh, đánh giá và rút kinh nghiệm “{t}”.", f"Reflect and evaluate “{t}”."),
+        ],
+    }
+    rows = packs.get(profile)
+    if not rows:
+        rows = [
+            (f"Kết nối kiến thức đã học về “{t}” (môn {s}).", f"Link prior knowledge of “{t}” in {s}."),
+            (f"Giảng kiến thức cốt lõi “{t}” theo chương trình {s}.", f"Teach core knowledge of “{t}” in {s}."),
+            (f"Luyện tập bài tập sát “{t}”.", f"Practice exercises on “{t}”."),
+            (f"Vận dụng “{t}” vào tình huống học tập / thực tiễn.", f"Apply “{t}” to a task or situation."),
+        ]
+    sections = []
+    for i, (vi, en) in enumerate(rows):
+        sections.append({
+            "heading_vi": GDPT2018_LESSON_STAGES[i][0],
+            "heading_en": GDPT2018_LESSON_STAGES[i][1],
+            "duration": ("5'", "15'", "15'", "10'")[i],
+            "content_vi": vi,
+            "content_en": en,
+            "teacher_activity": "Hướng dẫn, đặt câu hỏi, chốt kiến thức môn học",
+            "student_activity": "Trả lời, làm bài, trình bày theo yêu cầu bài",
+        })
+    return sections
+
+
+def _subject_gdpt_materials(profile: str, subject: str) -> list[str]:
+    base = {
+        "literature_kieu": ["SGK Ngữ văn", "Phiếu nhân vật", "Bảng lục bát", "Máy chiếu"],
+        "literature": ["SGK Ngữ văn", "Phiếu đọc hiểu", "Bảng phụ", "Máy chiếu"],
+        "math": ["SGK Toán", "Máy tính cầm tay", "Phiếu bài tập", "Bảng"],
+        "english": ["SGK Tiếng Anh", "Audio / video", "Phiếu bài tập", "Flashcards"],
+        "history": ["SGK Lịch sử", "Bản đồ / tranh ảnh", "Phiếu học tập", "Timeline"],
+        "geography": ["SGK Địa lý", "Bản đồ", "Biểu đồ", "Phiếu số liệu"],
+        "civic": ["SGK GDCD", "Tình huống pháp luật", "Phiếu thảo luận", "Máy chiếu"],
+        "physics": ["SGK Vật lý", "Dụng cụ thí nghiệm", "Máy tính", "Phiếu bài tập"],
+        "chemistry": ["SGK Hóa học", "Hóa chất / mô hình", "Phiếu thí nghiệm", "Bảng PTHH"],
+        "biology": ["SGK Sinh học", "Mẫu vật / tranh", "Kính hiển vi / mô hình", "Phiếu quan sát"],
+        "natural_science": ["SGK KHTN", "Bộ thí nghiệm", "Phiếu ghi chép", "Máy chiếu"],
+        "technology": ["SGK Công nghệ", "Dụng cụ / vật liệu", "Sơ đồ quy trình", "Phiếu an toàn"],
+        "informatics": ["SGK Tin học", "Máy tính", "Phần mềm lập trình", "Phiếu thuật toán"],
+        "pe": ["Còi", "Dụng cụ thể thao", "Sân / phòng gym", "Phiếu theo dõi"],
+        "art": ["Giấy / màu", "Mẫu tác phẩm", "Dụng cụ vẽ", "Máy chiếu"],
+        "music": ["Nhạc cụ / app nhạc", "Bảng nốt", "Loa", "Phiếu bài hát"],
+        "experiential": ["Phiếu trải nghiệm", "Vật liệu thực hành", "Nhật ký", "Máy quay / ảnh"],
+    }
+    return base.get(profile) or [f"SGK {subject}", "Phiếu bài tập", "Bảng", "Máy chiếu"]
+
+
+def _enforce_gdpt_lesson_quality(out: dict, fb: dict, grade: str, subject: str, topic: str) -> dict:
+    """Sau AI: luôn đúng 4 hoạt động, đúng môn, không slogan lạ."""
+    profile = _subject_profile_key(subject, topic)
+    out["sections"] = _normalize_gdpt_sections(out.get("sections"))
+    blob = " ".join([
+        str(out.get("title_vi") or ""),
+        str(out.get("core_content_vi") or ""),
+        str(out.get("core_content_en") or ""),
+        " ".join(str(x) for x in (out.get("objectives_vi") or [])),
+        " ".join(str(s.get("content_vi") or "") for s in out.get("sections") or []),
+    ])
+    if topic and _fold_text(topic) not in _fold_text(blob):
+        out["core_content_vi"] = fb.get("core_content_vi") or out.get("core_content_vi")
+        out["core_content_en"] = fb.get("core_content_en") or out.get("core_content_en")
+    if not _is_experiential_subject(subject) and _is_generic_teaching_text(blob):
+        out = _scrub_generic_lesson(out, fb)
+    if len(out.get("sections") or []) != 4:
+        out["sections"] = _normalize_gdpt_sections(fb.get("sections"))
+    if not out.get("materials"):
+        out["materials"] = _subject_gdpt_materials(profile, subject)
+    out["subject"] = subject
+    out["topic"] = topic
+    out["grade"] = grade
+    return out
+
+
 def _quiz_subject_rules(grade: str, subject: str, topic: str) -> str:
     if _is_math_topic(subject, topic):
         return f"""
@@ -215,7 +448,8 @@ CONTENT RULES — MATHEMATICS ({grade} · {subject} · {topic}):
   options “Nội dung đúng về {topic} / Khái niệm không liên quan / Thông tin sai / Không có đáp án”.
 - Each MCQ option must itself be a formula or a number, not a comment about the topic.
 """
-    if _is_kieu_topic(subject, topic) or _is_literature_topic(subject, topic):
+    lit_profile = _subject_profile_key(subject, topic)
+    if lit_profile in ("literature", "literature_kieu"):
         return f"""
 CONTENT RULES — LITERATURE ({grade} · {subject} · {topic}):
 - Ask about the AUTHOR, CHARACTERS, PLOT EVENTS, VERSE FORM and THEMES of “{topic}”.
@@ -355,7 +589,7 @@ def _teacher_brief(
 def _teaching_content_rules(grade: str, subject: str, topic: str) -> str:
     """Bắt buộc Word/slide dạy đúng môn + đúng Chủ đề, phục vụ giảng dạy."""
     extra = ""
-    if _is_kieu_topic(subject, topic) or _is_literature_topic(subject, topic):
+    if _subject_profile_key(subject, topic) in ("literature", "literature_kieu"):
         extra = f"""
 MÔN NGỮ VĂN — dạy tác phẩm “{topic}”:
 - Kiến thức bắt buộc: tác giả, hoàn cảnh sáng tác, thể loại/thể thơ, nhân vật, sự kiện, chủ đề/tư tưởng.
@@ -618,7 +852,7 @@ def _brief_requirements(description: str = "", extra: str = "", quiz_req: str = 
 
 
 def _fallback_lesson(grade: str, subject: str, topic: str, language: str, description: str = "") -> dict:
-    if _is_kieu_topic(subject, topic) or _is_literature_topic(subject, topic):
+    if _is_kieu_topic(subject, topic):
         return {
             "title_vi": f"Giáo án Ngữ văn: {topic}",
             "title_en": f"Literature lesson: {topic}",
@@ -704,85 +938,53 @@ def _fallback_lesson(grade: str, subject: str, topic: str, language: str, descri
             "source": "template",
             "language": language,
         }
+    profile = _subject_profile_key(subject, topic)
+    sections = _gdpt_stage_contents(profile, grade, subject, topic)
     return {
         "title_vi": f"Giáo án {subject}: {topic}",
         "title_en": f"{subject} lesson: {topic}",
         "grade": grade,
         "subject": subject,
         "topic": topic,
-        "description": description or f"Giảng dạy kiến thức môn {subject} về chủ đề {topic} cho {grade}.",
+        "description": description or (
+            f"Giáo án GDPT 2018 — {grade}, môn {subject}, chủ đề “{topic}”."
+        ),
         "duration_minutes": 45,
-        "materials": ["SGK / tài liệu môn học", "Phiếu bài tập", "Bảng", "Máy chiếu"],
+        "materials": _subject_gdpt_materials(profile, subject),
         "objectives_vi": [
-            f"Nêu được kiến thức cốt lõi của bài “{topic}” (môn {subject})",
-            f"Vận dụng kiến thức “{topic}” vào bài tập / tình huống học tập",
-            "Dùng đúng thuật ngữ môn học khi trả lời",
+            f"Nêu được kiến thức cốt lõi của “{topic}” (môn {subject}, {grade})",
+            f"Thực hiện bài luyện tập đúng thuật ngữ môn {subject}",
+            f"Vận dụng kiến thức “{topic}” vào tình huống/bài tập",
         ],
         "objectives_en": [
-            f"State the core knowledge of “{topic}” in {subject}",
-            f"Apply “{topic}” in a class task or exercise",
-            "Use subject terms correctly",
+            f"State the core knowledge of “{topic}” in {subject} ({grade})",
+            f"Complete practice using correct {subject} terminology",
+            f"Apply “{topic}” in a task or situation",
         ],
         "core_content_vi": (
-            f"Bài dạy môn {subject}, lớp {grade}, tập trung kiến thức chủ đề “{topic}”. "
-            "Giáo viên trình bày khái niệm / sự kiện / công thức then chốt, cho ví dụ, rồi cho học sinh luyện."
+            f"Bài học môn {subject} ({grade}) theo GDPT 2018, chủ đề “{topic}”. "
+            f"Giáo viên dạy đúng kiến thức và thuật ngữ của môn {subject}, "
+            "qua 4 hoạt động: Mở đầu — Hình thành kiến thức mới — Luyện tập — Vận dụng."
         ),
         "core_content_en": (
-            f"This {subject} lesson for {grade} teaches the content of “{topic}”: "
-            "key terms, a worked example, then student practice."
+            f"GDPT 2018 lesson in {subject} ({grade}) on “{topic}”: "
+            "subject-specific knowledge and terms through the four standard activities."
         ),
-        "sections": [
-            {
-                "heading_vi": "Mở đầu (Khởi động)",
-                "heading_en": "Opening (Warm-up)",
-                "duration": "5'",
-                "content_vi": f"Hỏi kiến thức đã biết về “{topic}” (môn {subject}), ghi thuật ngữ lên bảng.",
-                "content_en": f"Elicit what students already know about “{topic}” in {subject}.",
-                "teacher_activity": f"Hỏi đúng kiến thức {topic}",
-                "student_activity": "Nêu thuật ngữ / sự kiện đã học",
-            },
-            {
-                "heading_vi": "Hình thành kiến thức mới",
-                "heading_en": "Knowledge formation",
-                "duration": "15'",
-                "content_vi": f"Giảng nội dung chính của “{topic}”: định nghĩa, ví dụ, ý nghĩa trong môn {subject}.",
-                "content_en": f"Teach the main content of “{topic}” with a clear example for {subject}.",
-                "teacher_activity": "Giảng kiến thức, ví dụ",
-                "student_activity": "Ghi chú kiến thức bài",
-            },
-            {
-                "heading_vi": "Luyện tập",
-                "heading_en": "Practice",
-                "duration": "15'",
-                "content_vi": f"Học sinh làm bài tập / phiếu ngắn sát “{topic}”, không phải trò chơi chung.",
-                "content_en": f"Students complete a short exercise that only works if they know “{topic}”.",
-                "teacher_activity": "Phát phiếu, chữa bài",
-                "student_activity": "Làm bài, trình bày đáp án",
-            },
-            {
-                "heading_vi": "Vận dụng",
-                "heading_en": "Application",
-                "duration": "10'",
-                "content_vi": f"Vận dụng kiến thức “{topic}” giải một tình huống/bài tập mở rộng của môn {subject}.",
-                "content_en": f"Apply “{topic}” to an extended task or real situation in {subject}.",
-                "teacher_activity": "Chốt kiến thức, giao bài về nhà",
-                "student_activity": "Trình bày cách vận dụng kiến thức bài",
-            },
-        ],
+        "sections": sections,
         "vocabulary": [
             {"term": topic.split()[0] if topic else "topic", "meaning_vi": topic, "example": f"Today we study {topic}."},
-            {"term": "definition", "meaning_vi": "định nghĩa", "example": f"Write the definition of {topic}."},
-            {"term": "example", "meaning_vi": "ví dụ", "example": "Give one example from the lesson."},
-            {"term": "practice", "meaning_vi": "luyện tập", "example": "Practise the new knowledge."},
+            {"term": "definition", "meaning_vi": "định nghĩa", "example": f"Define key ideas of {topic}."},
             {"term": subject.split()[0] if subject else "subject", "meaning_vi": subject, "example": f"This is a {subject} lesson."},
+            {"term": "practice", "meaning_vi": "luyện tập", "example": f"Practise {topic}."},
+            {"term": "application", "meaning_vi": "vận dụng", "example": f"Apply {topic} in a task."},
         ],
         "assessment": {
-            "methods": ["Oral check", "Short exercise", "Exit question"],
-            "criteria": ["Correct knowledge", "Correct terms", "Completed practice"],
+            "methods": ["Oral check", "Subject exercise", "Application task"],
+            "criteria": [f"Correct {subject} knowledge", "Correct terminology", "Completed practice"],
         },
         "homework": [
-            f"Học lại kiến thức cốt lõi của “{topic}”.",
-            f"Làm 3 câu luyện tập môn {subject} về chủ đề này.",
+            f"Ôn kiến thức “{topic}” (môn {subject}).",
+            f"Làm bài tập vận dụng về “{topic}”.",
         ],
         "source": "template",
         "language": language,
@@ -1969,14 +2171,17 @@ def generate_lesson_draft(
         out["language"] = language
         out["theme_color"] = theme_color
         out["theme_accent"] = theme_accent
-        out["sections"] = _normalize_gdpt_sections(out.get("sections"))
+        out = _enforce_gdpt_lesson_quality(out, fb, grade, subject, topic)
         out.pop("note", None)
         return _json_safe(out)
 
     teach = _teaching_content_rules(grade, subject, topic)
+    profile = _subject_profile_key(subject, topic)
     prompt = f"""
 {brief}
 {teach}
+BẮT BUỘC: Tìm hiểu đúng chương trình GDPT 2018 môn {subject} ({grade}) về “{topic}” trước khi viết.
+Sai môn, sai thuật ngữ, sai kiến thức chuyên môn là KHÔNG CHẤP NHẬN. Loại môn: {profile}.
 Soạn giáo án GIẢNG DẠY SONG NGỮ đúng môn {subject} và đúng CHỦ ĐỀ “{topic}”. JSON đầy đủ một lần (không cắt):
 {{
   "title_vi": "...", "title_en": "...",
