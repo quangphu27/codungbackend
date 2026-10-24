@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, make_response, request
 from werkzeug.exceptions import RequestEntityTooLarge
 from app.config.config import Config
 from app.extensions import init_extensions, limiter
@@ -81,13 +81,24 @@ def create_app(config_class=Config):
     def internal_error(e):
         return jsonify({"message": "Lỗi máy chủ nội bộ"}), 500
 
-    @app.after_request
-    def _ensure_cors(resp):
+    def _apply_cors(resp):
         origin = (request.headers.get("Origin") or "").rstrip("/")
         allowed = {str(o).rstrip("/") for o in (app.config.get("CORS_ORIGINS") or [])}
         if origin and origin in allowed:
+            requested = request.headers.get("Access-Control-Request-Headers") or ""
+            allow_headers = ", ".join(sorted({
+                "Authorization",
+                "Content-Type",
+                "X-Requested-With",
+                "Accept",
+                "Origin",
+                *[part.strip() for part in requested.split(",") if part.strip()],
+            }))
             resp.headers["Access-Control-Allow-Origin"] = origin
             resp.headers["Access-Control-Allow-Credentials"] = "true"
+            resp.headers["Access-Control-Allow-Headers"] = allow_headers
+            resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+            resp.headers["Access-Control-Max-Age"] = "86400"
             resp.headers["Access-Control-Expose-Headers"] = (
                 "Content-Disposition, Content-Type, Content-Length"
             )
@@ -95,6 +106,16 @@ def create_app(config_class=Config):
             if "Origin" not in vary:
                 resp.headers["Vary"] = (vary + ", Origin").strip(", ").strip()
         return resp
+
+    @app.before_request
+    def _cors_preflight():
+        if request.method != "OPTIONS":
+            return None
+        return _apply_cors(make_response("", 204))
+
+    @app.after_request
+    def _ensure_cors(resp):
+        return _apply_cors(resp)
 
     return app
 
