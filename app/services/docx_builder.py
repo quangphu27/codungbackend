@@ -246,7 +246,7 @@ def build_rich_docx_bytes(lesson: dict) -> bytes:
         materials = [materials]
 
     # ===== HEADER =====
-    _add_para(doc, "EDUBRIGHT · EXPERIENTIAL LEARNING IN ENGLISH", size=11, bold=True, color=theme["orange"], align="center", space_after=2)
+    _add_para(doc, "EDUBRIDGE · TEACHING AND LEARNING SUBJECTS IN ENGLISH", size=11, bold=True, color=theme["orange"], align="center", space_after=2)
     _add_para(doc, "GIÁO ÁN BÀI HỌC TRẢI NGHIỆM / BILINGUAL LESSON PLAN", size=13, bold=True, color=theme["navy"], align="center", space_after=4)
     _add_heading_custom(doc, title_vi, level=0, theme=theme)
     if title_en and title_en != title_vi:
@@ -461,7 +461,7 @@ def build_rich_docx_bytes(lesson: dict) -> bytes:
     _add_para(doc, "", space_after=8)
     _add_para(
         doc,
-        "— EduBright · Teacher Studio · Bilingual lesson plan —",
+        "— EduBridge · Teacher Studio · Bilingual lesson plan —",
         size=9, italic=True, color=theme["orange"], align="center", space_before=12,
     )
 
@@ -504,7 +504,7 @@ def build_quiz_docx_bytes(quiz: dict) -> bytes:
     cell.text = ""
     p = cell.paragraphs[0]
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    r = p.add_run("EDUBRIGHT  ·  EXPERIENTIAL QUIZ (ENGLISH)")
+    r = p.add_run("EDUBRIDGE  ·  EXPERIENTIAL QUIZ (ENGLISH)")
     _set_run(r, size=16, bold=True, color=(255, 255, 255))
     p2 = cell.add_paragraph()
     p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -579,7 +579,7 @@ def build_quiz_docx_bytes(quiz: dict) -> bytes:
         _add_data_table(doc, ["No.", "Type", "Answer / Key points", "Explanation"], ans_rows, theme=theme)
     _add_para(
         doc,
-        "— EduBright · Print page 1 for students; keep the answer key for teachers —",
+        "— EduBridge · Print page 1 for students; keep the answer key for teachers —",
         size=9, italic=True, color=theme["orange"], align="center", space_before=12,
     )
 

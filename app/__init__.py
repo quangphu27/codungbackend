@@ -60,7 +60,7 @@ def create_app(config_class=Config):
 
     @app.route("/api/health")
     def health():
-        return jsonify({"status": "ok", "app": "EduBright API"})
+        return jsonify({"status": "ok", "app": "EduBridge API"})
 
     @app.errorhandler(RequestEntityTooLarge)
     def file_too_large(e):
@@ -141,7 +141,7 @@ def _seed_initial_data(db):
     subjects_data = [
         {
             "name": "Experiential Learning",
-            "description": "Học tiếng Anh thông qua trải nghiệm thực tế - phương pháp học tập chủ đạo của nền tảng.",
+            "description": "Dạy và học các môn bằng tiếng Anh - phương pháp học tập chủ đạo của nền tảng.",
             "difficulty_level": "intermediate",
             "status": "active",
             "featured": True,
@@ -212,7 +212,7 @@ def _seed_initial_data(db):
 
     db.settings.insert_one({
         "key": "site_name",
-        "value": "EXPERIENTIAL LEARNING",
+        "value": "EduBridge",
         "updated_at": utc_now(),
     })
     db.settings.insert_one({

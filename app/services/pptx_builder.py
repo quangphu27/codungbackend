@@ -306,7 +306,7 @@ def _fetch_wikimedia_image(query: str, w: int = 900) -> bytes | None:
             "iiurlwidth": str(w),
         })
     )
-    headers = {"User-Agent": "EduBrightTeacherStudio/1.0 (educational; contact@local)"}
+    headers = {"User-Agent": "EduBridgeTeacherStudio/1.0 (educational; contact@local)"}
     try:
         req = urllib.request.Request(api, headers=headers)
         with urllib.request.urlopen(req, timeout=4) as res:
