@@ -345,13 +345,13 @@ def upload_lesson_media(lesson_id):
         err = str(e)
         if "413" in err or "Request Entity Too Large" in err:
             return jsonify({
-                "message": "Video quá lớn cho Cloudinary (thường tối đa ~100MB). Hãy nén video hoặc chọn file nhỏ hơn.",
+                "message": "Video quá lớn (tối đa khoảng 100MB). Hãy nén video hoặc chọn file nhỏ hơn.",
             }), 413
         current_app.logger.exception("Cloudinary upload failed")
-        return jsonify({"message": "Tải file lên Cloudinary thất bại. Vui lòng thử lại."}), 500
+        return jsonify({"message": "Tải file thất bại. Vui lòng thử lại."}), 500
     except Exception as e:
         current_app.logger.exception("Upload lesson media failed")
-        msg = str(e) if current_app.debug else "Tải file lên Cloudinary thất bại"
+        msg = str(e) if current_app.debug else "Tải file thất bại"
         return jsonify({"message": msg}), 500
 
 
