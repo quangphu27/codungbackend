@@ -51,14 +51,15 @@ class Config:
         or "experiential_learning"
     )
 
-    # Cloudinary: ưu tiên CLOUDINARY_URL (cloudinary://key:secret@cloud_name)
-    CLOUDINARY_URL = os.getenv("CLOUDINARY_URL", "")
+    # Cloudinary — hardcoded fallback so Render works without env
+    CLOUDINARY_URL = os.getenv(
+        "CLOUDINARY_URL",
+        "cloudinary://295111514962362:tw1thR91iRrkFb2cGswzw2F2VXY@dnqrhfnas",
+    )
     CLOUDINARY_FOLDER_PREFIX = os.getenv("CLOUDINARY_FOLDER_PREFIX", "codung")
-
-    # Fallback nếu không dùng CLOUDINARY_URL
-    CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME", "")
-    CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY", "")
-    CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET", "")
+    CLOUDINARY_CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME", "dnqrhfnas")
+    CLOUDINARY_API_KEY = os.getenv("CLOUDINARY_API_KEY", "295111514962362")
+    CLOUDINARY_API_SECRET = os.getenv("CLOUDINARY_API_SECRET", "tw1thR91iRrkFb2cGswzw2F2VXY")
 
     MAIL_SERVER = os.getenv("MAIL_SERVER", "smtp.gmail.com")
     MAIL_PORT = int(os.getenv("MAIL_PORT", 587))

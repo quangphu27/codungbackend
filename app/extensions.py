@@ -15,16 +15,13 @@ mongo_client = None
 
 
 def _init_cloudinary(app):
-    cloudinary_url = app.config.get("CLOUDINARY_URL") or os.getenv("CLOUDINARY_URL")
+    from app.services.studio_files import CLOUDINARY_URL, ensure_cloudinary
+
+    cloudinary_url = app.config.get("CLOUDINARY_URL") or os.getenv("CLOUDINARY_URL") or CLOUDINARY_URL
     if cloudinary_url:
         cloudinary.config(cloudinary_url=cloudinary_url, secure=True)
     else:
-        cloudinary.config(
-            cloud_name=app.config["CLOUDINARY_CLOUD_NAME"],
-            api_key=app.config["CLOUDINARY_API_KEY"],
-            api_secret=app.config["CLOUDINARY_API_SECRET"],
-            secure=True,
-        )
+        ensure_cloudinary()
 
 
 def init_extensions(app):
