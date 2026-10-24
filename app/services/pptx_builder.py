@@ -281,7 +281,7 @@ def _make_themed_illustration(keyword: str, topic: str = "", title: str = "", w:
         font = ImageFont.load_default()
         small = font
     draw.text((70, 62), label, fill=(255, 255, 255), font=font)
-    draw.text((70, h - 70), "Experiential Learning", fill=c1, font=small)
+    draw.text((70, h - 70), (topic or theme or "EduBridge")[:28], fill=c1, font=small)
 
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)
@@ -681,7 +681,7 @@ def _footer(slide, prs, page: int, total: int, topic: str, meta=None):
     bar = _add_rect(slide, 0, Inches(7.15), prs.slide_width, Inches(0.35), P(meta, "orange"))
     _add_textbox(
         slide, Inches(0.4), Inches(7.18), Inches(9), Inches(0.3),
-        f"Hoạt động trải nghiệm  ·  {topic[:50]}",
+        f"{((meta or {}).get('subject') or 'EduBridge')[:28]}  ·  {topic[:50]}",
         size=10, color=P(meta, "white"),
     )
     _add_textbox(
@@ -704,7 +704,7 @@ def _layout_title(slide, prs, data, meta):
     _add_rect(slide, 0, Inches(6.9), Inches(8.2), Inches(0.6), P(meta, "orange"))
 
     title = data.get("title") or meta.get("topic") or "Lesson"
-    subtitle = data.get("subtitle") or meta.get("subject") or "Hoạt động trải nghiệm"
+    subtitle = data.get("subtitle") or meta.get("subject") or meta.get("topic") or "Lesson"
     title_size = 40 if len(title) < 42 else (32 if len(title) < 70 else 26)
     t1 = _add_textbox(slide, Inches(0.7), Inches(1.7), Inches(6.8), Inches(2.2), title, size=title_size, bold=True, color=P(meta, "white"))
     t2 = _add_textbox(slide, Inches(0.7), Inches(4.1), Inches(6.8), Inches(0.9), subtitle, size=20, color=P(meta, "sky"))
@@ -937,7 +937,7 @@ def build_rich_pptx_bytes(deck: dict) -> bytes:
 
     meta = {
         "grade": deck.get("grade") or "",
-        "subject": deck.get("subject") or "Hoạt động trải nghiệm",
+        "subject": deck.get("subject") or "Lesson",
         "topic": deck.get("topic") or deck.get("title") or "Lesson",
         "language": deck.get("language") or "vi",
         "palette": derive_palette(deck.get("theme_color"), deck.get("theme_accent")),

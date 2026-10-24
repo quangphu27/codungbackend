@@ -32,25 +32,24 @@ SYSTEM_MATH_EXAM = (
 
 
 SYSTEM_TEACHER = (
-    "Bạn là chuyên gia cao cấp biên soạn giáo án, đề kiểm tra và học liệu Hoạt động trải nghiệm "
-    "theo Chương trình GDPT 2018 Việt Nam. "
-    "CHỈ dùng thông tin giáo viên cung cấp (lớp, môn, chủ đề, mô tả, yêu cầu thêm, ngôn ngữ, màu sắc). "
-    "Không đổi chủ đề, không viết generic. "
-    "Viết nội dung DÀI, chuẩn sư phạm, có tình huống thật ở trường Việt Nam, lời giáo viên và câu hỏi gợi ý. "
-    "Trả về đúng JSON, không markdown."
+    "Bạn là chuyên gia biên soạn giáo án, đề và học liệu theo Chương trình GDPT 2018. "
+    "Đúng MÔN, đúng CHỦ ĐỀ, đúng thuật ngữ và kiến thức môn học. "
+    "Giáo án theo 4 hoạt động: Mở đầu → Hình thành kiến thức mới → Luyện tập → Vận dụng. "
+    "Không gán mọi môn thành Hoạt động trải nghiệm. Trả về đúng JSON, không markdown."
 )
 
 SYSTEM_LESSON = (
-    "Bạn soạn giáo án trải nghiệm song ngữ Việt–Anh theo GDPT 2018. "
-    "JSON hợp lệ, đủ field, không markdown, không cắt giữa chừng. "
-    "Mỗi content_vi/content_en khoảng 4–7 câu. Đúng lớp, môn, chủ đề giáo viên đưa."
+    "Bạn soạn giáo án song ngữ Việt–Anh theo Chương trình GDPT 2018: đúng MÔN, đúng CHỦ ĐỀ, "
+    "đúng thuật ngữ sư phạm và kiến thức môn học. Tiến trình đúng 4 hoạt động: "
+    "Mở đầu (Khởi động) → Hình thành kiến thức mới → Luyện tập → Vận dụng. "
+    "Không biến mọi môn thành Hoạt động trải nghiệm. JSON hợp lệ, không markdown."
 )
 
 SYSTEM_EIGHT_STEP = (
-    "You create 8-step experiential English lessons for Vietnamese secondary students. "
-    "Student-facing text in English. meaning_vi and reading translation in Vietnamese. "
-    "Keep wording concise so JSON is complete (never truncated). Valid JSON only. "
-    "Stay on the teacher's topic, grade and subject."
+    "You create 8-step English-medium lessons for Vietnamese GDPT 2018 classes. "
+    "Content must match the EXACT subject and topic with correct subject terminology — "
+    "not generic experiential-learning filler. Student text in English; meaning_vi and reading "
+    "translation in Vietnamese. Quiz items are real exam questions for that subject. JSON only."
 )
 
 
@@ -77,6 +76,127 @@ def _is_literature_topic(subject: str = "", topic: str = "") -> bool:
     return any(k in blob for k in (
         "ngu van", "van hoc", "literature", "truyen kieu", "nguyen du", "tac pham",
     ))
+
+
+def _is_experiential_subject(subject: str = "") -> bool:
+    blob = _fold_text(subject or "")
+    return any(k in blob for k in (
+        "trai nghiem", "experiential", "hoat dong trai nghiem",
+    ))
+
+
+GDPT2018_LESSON_STAGES = (
+    ("Mở đầu (Khởi động)", "Opening (Warm-up)"),
+    ("Hình thành kiến thức mới", "Knowledge formation"),
+    ("Luyện tập", "Practice"),
+    ("Vận dụng", "Application"),
+)
+
+
+def _gdpt2018_lesson_frame(subject: str) -> str:
+    stages = "\n".join(
+        f"{i}. {vi} / {en}" for i, (vi, en) in enumerate(GDPT2018_LESSON_STAGES, 1)
+    )
+    extra = ""
+    if not _is_experiential_subject(subject):
+        extra = (
+            "- Môn hiện tại KHÔNG phải Hoạt động trải nghiệm: cấm cấu trúc/khẩu hiệu trải nghiệm, "
+            "cấm “tạo sản phẩm nhóm” thay cho bài tập môn học.\n"
+        )
+    return f"""
+TIẾN TRÌNH DẠY HỌC (Chương trình GDPT 2018 — đúng 4 hoạt động, đúng thứ tự):
+{stages}
+{extra}
+"""
+
+
+def _subject_gdpt_terminology(grade: str, subject: str, topic: str) -> str:
+    blob = _fold_text(f"{subject} {topic}")
+    if _is_literature_topic(subject, topic) or _is_kieu_topic(subject, topic):
+        return f"""
+THUẬT NGỮ NGỮ VĂN (GDPT 2018): tác giả, hoàn cảnh sáng tác, thể loại, thể thơ, nhân vật, xung đột,
+chủ đề, tư tưởng, nghệ thuật (biện pháp tu từ, hình ảnh), đọc hiểu, phân tích, cảm thụ.
+Dạy “{topic}” bằng kiến thức tác phẩm — không dạy kỹ năng sống chung.
+"""
+    if _is_math_topic(subject, topic):
+        return f"""
+THUẬT NGỮ TOÁN (GDPT 2018): khái niệm, định lý, tính chất, công thức, mệnh đề, bài toán,
+lập luận, tính toán, rút gọn, biện luận, kiểm tra nghiệm. Lớp {grade}, chủ đề “{topic}”.
+"""
+    if any(k in blob for k in ("tieng anh", "english", "anh van")):
+        return f"""
+THUẬT NGỮ TIẾNG ANH (GDPT 2018): vocabulary, grammar, pronunciation, reading comprehension,
+listening, speaking, writing, communicative functions — gắn chủ đề “{topic}”, lớp {grade}.
+"""
+    if any(k in blob for k in ("lich su", "history", "su hoc")):
+        return f"""
+THUẬT NGỮ LỊCH SỬ (GDPT 2018): thời gian, không gian, nhân vật lịch sử, sự kiện, giai đoạn,
+nguyên nhân – diễn biến – kết quả – ý nghĩa, nguồn sử liệu, bản đồ tư duy.
+"""
+    if any(k in blob for k in ("dia ly", "geography", "dia li")):
+        return f"""
+THUẬT NGỮ ĐỊA LÝ (GDPT 2018): vị trí địa lý, khí hậu, địa hình, dân cư, kinh tế, tài nguyên,
+biểu đồ, bản đồ, môi trường, vùng lãnh thổ — chủ đề “{topic}”.
+"""
+    if any(k in blob for k in ("cong dan", "gdcd", "civic", "kinh te", "phap luat")):
+        return f"""
+THUẬT NGỮ GDCD / KINH TẾ & PHÁP LUẬT (GDPT 2018): quyền, nghĩa vụ, pháp luật, công dân,
+giá trị, chuẩn mực, tình huống thực tiễn, phân tích và lựa chọn hành vi.
+"""
+    if any(k in blob for k in ("vat ly", "physics")):
+        return f"""
+THUẬT NGỮ VẬT LÝ (GDPT 2018): hiện tượng, định luật, công thức, đơn vị SI, thí nghiệm,
+mô hình, giải bài tập có số liệu — chủ đề “{topic}”, lớp {grade}.
+"""
+    if any(k in blob for k in ("hoa hoc", "chemistry", "hoa ")):
+        return f"""
+THUẬT NGỮ HÓA HỌC (GDPT 2018): nguyên tố, hợp chất, phản ứng, cân bằng, mol, nồng độ,
+phương trình hóa học, tính toán hóa học — chủ đề “{topic}”.
+"""
+    if any(k in blob for k in ("sinh hoc", "biology", "sinh ")):
+        return f"""
+THUẬT NGỮ SINH HỌC (GDPT 2018): tế bào, cơ thể, quá trình sinh học, di truyền, hệ sinh thái,
+quan sát, mô hình, thí nghiệm — chủ đề “{topic}”.
+"""
+    if any(k in blob for k in ("khoa hoc", "science", "tu nhien")):
+        return f"""
+THUẬT NGỮ KHOA HỌC TỰ NHIÊN (GDPT 2018): hiện tượng, giả thuyết, thí nghiệm, đo lường,
+công thức, vận dụng vào tình huống — chủ đề “{topic}”, lớp {grade}.
+"""
+    if _is_experiential_subject(subject):
+        return f"""
+MÔN HOẠT ĐỘNG TRẢI NGHIỆM (GDPT 2018): chủ đề trải nghiệm, kỹ năng sống, tham gia thực hành,
+phản ánh trải nghiệm — chỉ khi môn là Hoạt động trải nghiệm / Experiential Learning.
+"""
+    return f"""
+THUẬT NGỮ MÔN {subject} (GDPT 2018): dùng đúng khái niệm, định nghĩa, quy trình, bài tập
+của môn {subject} về “{topic}” (lớp {grade}). Không lẫn sang môn khác hoặc khẩu hiệu chung.
+"""
+
+
+def _normalize_gdpt_sections(sections: list | None) -> list[dict]:
+    """Chuẩn hóa tiến trình 4 hoạt động GDPT 2018."""
+    src = [s for s in (sections or []) if isinstance(s, dict)]
+    defaults = [
+        ("5'", "Kết nối kiến thức, đặt vấn đề bài học.", "Elicit prior knowledge and state the problem."),
+        ("15'", "Hình thành kiến thức mới của bài.", "Students acquire the new knowledge of the lesson."),
+        ("15'", "Bài tập củng cố kiến thức và kỹ năng.", "Exercises to consolidate knowledge and skills."),
+        ("10'", "Vận dụng kiến thức vào tình huống/bài tập.", "Apply knowledge to a situation or task."),
+    ]
+    out = []
+    for i, (vi, en) in enumerate(GDPT2018_LESSON_STAGES):
+        base = dict(src[i]) if i < len(src) else {}
+        out.append({
+            **base,
+            "heading_vi": vi,
+            "heading_en": en,
+            "duration": base.get("duration") or defaults[i][0],
+            "content_vi": (base.get("content_vi") or defaults[i][1]).strip(),
+            "content_en": (base.get("content_en") or defaults[i][2]).strip(),
+            "teacher_activity": base.get("teacher_activity") or "Hướng dẫn, đặt câu hỏi, chốt kiến thức",
+            "student_activity": base.get("student_activity") or "Trả lời, làm bài, trình bày",
+        })
+    return out
 
 
 def _quiz_subject_rules(grade: str, subject: str, topic: str) -> str:
@@ -232,6 +352,121 @@ def _teacher_brief(
     )
 
 
+def _teaching_content_rules(grade: str, subject: str, topic: str) -> str:
+    """Bắt buộc Word/slide dạy đúng môn + đúng Chủ đề, phục vụ giảng dạy."""
+    extra = ""
+    if _is_kieu_topic(subject, topic) or _is_literature_topic(subject, topic):
+        extra = f"""
+MÔN NGỮ VĂN — dạy tác phẩm “{topic}”:
+- Kiến thức bắt buộc: tác giả, hoàn cảnh sáng tác, thể loại/thể thơ, nhân vật, sự kiện, chủ đề/tư tưởng.
+- Truyện Kiều: Nguyễn Du, Đoạn trường tân thanh, lục bát; Thúy Kiều, Thúy Vân, Kim Trọng, Hoạn Thư; tài mệnh tương đố, chữ hiếu.
+- Hoạt động lớp: đọc hiểu, bảng nhân vật, phân tích câu thơ, thảo luận chủ đề — không phải trò chơi chung.
+"""
+    elif _is_math_topic(subject, topic):
+        extra = f"""
+MÔN TOÁN — dạy đúng kiến thức “{topic}”:
+- Định nghĩa, công thức, ví dụ tính toán, bài luyện theo lớp {grade}.
+- Cấm chỉ nói “thảo luận nhóm / tạo sản phẩm” mà không có bài toán thật.
+"""
+    elif any(k in _subject_blob(subject, topic) for k in (
+        "khoa học", "khoa hoc", "science", "vật lý", "vat ly", "hóa", "hoa hoc",
+        "sinh", "physics", "chemistry", "biology",
+    )):
+        extra = f"""
+MÔN KHOA HỌC — dạy hiện tượng/công thức/thí nghiệm của “{topic}”.
+"""
+    ban = (
+        "CẤM (trừ môn Hoạt động trải nghiệm): khẩu hiệu trải nghiệm chung, "
+        "“hands-on exploration”, “create a mini product”, “I learned / I will apply”."
+        if not _is_experiential_subject(subject)
+        else "Môn Hoạt động trải nghiệm: bám chủ đề trải nghiệm và kỹ năng sống của bài."
+    )
+    return f"""
+HỌC LIỆU GIẢNG DẠY — CHƯƠNG TRÌNH GDPT 2018 (bắt buộc):
+- Đúng lớp {grade}, môn {subject}, CHỦ ĐỀ “{topic}”.
+- Mỗi đoạn/bullet phải là kiến thức hoặc kỹ năng môn học về “{topic}”, đúng thuật ngữ môn.
+- Nếu đổi chủ đề thì nội dung phải SAI (tên, sự kiện, công thức, nhân vật của đúng chủ đề này).
+- Tổ chức lớp chỉ là CÁCH dạy kiến thức đó, không thay cho nội dung môn học.
+{ban}
+{_gdpt2018_lesson_frame(subject)}
+{_subject_gdpt_terminology(grade, subject, topic)}
+{extra}
+"""
+
+
+def _is_generic_teaching_text(text: str) -> bool:
+    blob = _fold_text(text or "")
+    return any(m in blob for m in (
+        "hands-on", "mini product", "experiential learning", "create a mini",
+        "i learned", "i will apply", "i still wonder",
+        "trai nghiem chinh", "hoat dong trai nghiem", "tao san pham nho",
+        "leader recorder", "timekeeper",
+    ))
+
+
+def _scrub_generic_lesson(out: dict, fb: dict) -> dict:
+    if not isinstance(out, dict) or not isinstance(fb, dict):
+        return out
+    title_blob = f"{out.get('title_vi') or ''} {out.get('title_en') or ''}"
+    if _is_generic_teaching_text(title_blob):
+        out["title_vi"] = fb.get("title_vi") or out.get("title_vi")
+        out["title_en"] = fb.get("title_en") or out.get("title_en")
+    core_blob = f"{out.get('core_content_vi') or ''} {out.get('core_content_en') or ''}"
+    if _is_generic_teaching_text(core_blob):
+        if fb.get("core_content_vi"):
+            out["core_content_vi"] = fb["core_content_vi"]
+        if fb.get("core_content_en"):
+            out["core_content_en"] = fb["core_content_en"]
+    fb_secs = [s for s in (fb.get("sections") or []) if isinstance(s, dict)]
+    secs = out.get("sections") or []
+    for i, sec in enumerate(secs):
+        if not isinstance(sec, dict):
+            continue
+        blob = " ".join(str(sec.get(k) or "") for k in (
+            "heading_vi", "heading_en", "content_vi", "content_en",
+            "teacher_activity", "student_activity",
+        ))
+        if _is_generic_teaching_text(blob) and i < len(fb_secs):
+            secs[i] = fb_secs[i]
+    out["sections"] = secs
+    voc = [v for v in (out.get("vocabulary") or []) if isinstance(v, dict)]
+    if voc and any(_is_generic_teaching_text(f"{v.get('term') or ''} {v.get('meaning_vi') or ''}") for v in voc):
+        out["vocabulary"] = fb.get("vocabulary") or voc
+    return out
+
+
+def _slide_text_blob(slide: dict) -> str:
+    bits = [slide.get("title"), slide.get("subtitle")]
+    bits.extend(slide.get("bullets") or [])
+    bits.extend(slide.get("left_bullets") or [])
+    bits.extend(slide.get("right_bullets") or [])
+    return " ".join(str(x or "") for x in bits)
+
+
+def _scrub_generic_slides(slides: list, fb_slides: list) -> list:
+    items = [s for s in (slides or []) if isinstance(s, dict)]
+    pool = [
+        dict(s) for s in (fb_slides or [])
+        if isinstance(s, dict) and str(s.get("layout") or "") not in ("title", "closing")
+    ]
+    used = set()
+    out = []
+    for s in items:
+        layout = str(s.get("layout") or "")
+        if layout in ("title", "closing") or not _is_generic_teaching_text(_slide_text_blob(s)):
+            out.append(s)
+            continue
+        replacement = None
+        for j, cand in enumerate(pool):
+            if j in used:
+                continue
+            replacement = dict(cand)
+            used.add(j)
+            break
+        out.append(replacement or s)
+    return out
+
+
 def _strip_json(text: str) -> str:
     if not text:
         return ""
@@ -383,88 +618,173 @@ def _brief_requirements(description: str = "", extra: str = "", quiz_req: str = 
 
 
 def _fallback_lesson(grade: str, subject: str, topic: str, language: str, description: str = "") -> dict:
+    if _is_kieu_topic(subject, topic) or _is_literature_topic(subject, topic):
+        return {
+            "title_vi": f"Giáo án Ngữ văn: {topic}",
+            "title_en": f"Literature lesson: {topic}",
+            "grade": grade,
+            "subject": subject,
+            "topic": topic,
+            "description": description or f"Dạy kiến thức tác phẩm {topic} cho học sinh {grade}.",
+            "duration_minutes": 45,
+            "materials": ["SGK Ngữ văn", "Phiếu nhân vật", "Bảng lục bát", "Máy chiếu"],
+            "objectives_vi": [
+                "Nêu được tác giả Nguyễn Du và thể loại lục bát của Truyện Kiều",
+                "Nhận diện nhân vật Thúy Kiều, Thúy Vân, Kim Trọng, Hoạn Thư",
+                "Giải thích tài mệnh tương đố và chữ hiếu qua một sự kiện",
+            ],
+            "objectives_en": [
+                "Name Nguyễn Du and the lục bát form of Truyện Kiều",
+                "Identify Kiều, Vân, Kim Trọng and Hoạn Thư",
+                "Explain tài mệnh tương đố and filial piety with one plot event",
+            ],
+            "core_content_vi": (
+                "Truyện Kiều (Đoạn trường tân thanh) của Nguyễn Du kể số phận Vương Thúy Kiều. "
+                "Tác phẩm viết bằng lục bát. Kiều phải bán mình cứu cha, xa Kim Trọng, chịu oan ức với Hoạn Thư. "
+                "Chủ đề lớn: tài mệnh tương đố và chữ hiếu."
+            ),
+            "core_content_en": (
+                "Truyện Kiều by Nguyễn Du follows Vương Thúy Kiều in lục bát verse. "
+                "She sells herself to save her father, is parted from Kim Trọng, and suffers under Hoạn Thư. "
+                "Key ideas: talent versus fate, and filial piety."
+            ),
+            "sections": [
+                {
+                    "heading_vi": "Mở đầu (Khởi động)",
+                    "heading_en": "Opening (Warm-up)",
+                    "duration": "5'",
+                    "content_vi": "Hỏi: Ai viết Truyện Kiều? Nhân vật chính là ai? Ghi nhanh Nguyễn Du – Thúy Kiều.",
+                    "content_en": "Ask who wrote Truyện Kiều and who the heroine is. Board: Nguyễn Du – Thúy Kiều.",
+                    "teacher_activity": "Hỏi tác giả, nhân vật",
+                    "student_activity": "Trả lời ngắn đúng kiến thức tác phẩm",
+                },
+                {
+                    "heading_vi": "Hình thành kiến thức mới",
+                    "heading_en": "Knowledge formation",
+                    "duration": "12'",
+                    "content_vi": "Giảng: Nguyễn Du, lục bát, Kiều–Vân–Kim Trọng–Hoạn Thư, tình tiết bán mình cứu cha.",
+                    "content_en": "Teach author, lục bát, the four key characters, and the self-sale to save the father.",
+                    "teacher_activity": "Giảng tác giả, thể thơ, nhân vật",
+                    "student_activity": "Ghi bảng nhân vật và sự kiện",
+                },
+                {
+                    "heading_vi": "Luyện tập",
+                    "heading_en": "Practice",
+                    "duration": "18'",
+                    "content_vi": "Nhóm điền bảng: nhân vật / vai trò / sự kiện. Nêu một dẫn chứng tài mệnh tương đố.",
+                    "content_en": "Groups fill a character–role–event table and give one example of tài mệnh tương đố.",
+                    "teacher_activity": "Phát phiếu nhân vật, chấm nhanh",
+                    "student_activity": "Điền bảng, nêu dẫn chứng từ truyện",
+                },
+                {
+                    "heading_vi": "Vận dụng",
+                    "heading_en": "Application",
+                    "duration": "10'",
+                    "content_vi": "Viết 4–5 câu: vì sao Kiều phải bán mình? Chữ hiếu thể hiện thế nào? Liên hệ ý nghĩa tác phẩm.",
+                    "content_en": "Write 4–5 sentences on filial piety and tài mệnh tương đố with plot evidence.",
+                    "teacher_activity": "Thu phiếu, nhận xét kiến thức",
+                    "student_activity": "Trả lời bằng sự kiện trong truyện",
+                },
+            ],
+            "vocabulary": [
+                {"term": "lục bát", "meaning_vi": "thể thơ 6–8", "example": "Truyện Kiều is written in lục bát."},
+                {"term": "filial piety", "meaning_vi": "chữ hiếu", "example": "Kiều shows filial piety when she saves her father."},
+                {"term": "fate", "meaning_vi": "số mệnh", "example": "Talent and fate conflict in Kiều’s life."},
+                {"term": "heroine", "meaning_vi": "nữ chính", "example": "Thúy Kiều is the heroine."},
+                {"term": "verse novel", "meaning_vi": "truyện thơ", "example": "Truyện Kiều is a verse novel by Nguyễn Du."},
+            ],
+            "assessment": {
+                "methods": ["Character table", "Oral check", "Short written answer"],
+                "criteria": ["Correct author/form", "Correct characters", "One plot fact"],
+            },
+            "homework": [
+                "Học thuộc: tác giả, thể thơ, 4 nhân vật chính.",
+                "Viết 6 câu tiếng Anh về chữ hiếu của Kiều.",
+            ],
+            "source": "template",
+            "language": language,
+        }
     return {
-        "title_vi": f"Giáo án trải nghiệm: {topic}",
-        "title_en": f"Experiential Lesson Plan: {topic}",
+        "title_vi": f"Giáo án {subject}: {topic}",
+        "title_en": f"{subject} lesson: {topic}",
         "grade": grade,
         "subject": subject,
         "topic": topic,
-        "description": description,
+        "description": description or f"Giảng dạy kiến thức môn {subject} về chủ đề {topic} cho {grade}.",
         "duration_minutes": 45,
-        "materials": [
-            "Projector / slides",
-            "Worksheet handout",
-            "Board and markers",
-            "Group activity cards",
-        ],
+        "materials": ["SGK / tài liệu môn học", "Phiếu bài tập", "Bảng", "Máy chiếu"],
         "objectives_vi": [
-            f"Hiểu khái niệm cơ bản về {topic}",
-            "Áp dụng kiến thức vào tình huống thực tế",
-            "Phát triển kỹ năng giao tiếp bằng tiếng Anh liên quan chủ đề",
-            "Phản ánh và đánh giá quá trình học tập trải nghiệm",
+            f"Nêu được kiến thức cốt lõi của bài “{topic}” (môn {subject})",
+            f"Vận dụng kiến thức “{topic}” vào bài tập / tình huống học tập",
+            "Dùng đúng thuật ngữ môn học khi trả lời",
         ],
         "objectives_en": [
-            f"Understand basic concepts of {topic}",
-            "Apply knowledge in real-life situations",
-            "Develop English communication related to the topic",
-            "Reflect on the experiential learning process",
+            f"State the core knowledge of “{topic}” in {subject}",
+            f"Apply “{topic}” in a class task or exercise",
+            "Use subject terms correctly",
         ],
+        "core_content_vi": (
+            f"Bài dạy môn {subject}, lớp {grade}, tập trung kiến thức chủ đề “{topic}”. "
+            "Giáo viên trình bày khái niệm / sự kiện / công thức then chốt, cho ví dụ, rồi cho học sinh luyện."
+        ),
+        "core_content_en": (
+            f"This {subject} lesson for {grade} teaches the content of “{topic}”: "
+            "key terms, a worked example, then student practice."
+        ),
         "sections": [
             {
-                "heading_vi": "Khởi động",
-                "heading_en": "Warm-up",
+                "heading_vi": "Mở đầu (Khởi động)",
+                "heading_en": "Opening (Warm-up)",
                 "duration": "5'",
-                "content_vi": f"Giáo viên giới thiệu chủ đề {topic} qua câu hỏi mở và hình ảnh; kích hoạt kiến thức nền của học sinh.",
-                "content_en": f"Teacher introduces {topic} with open questions and visuals to activate prior knowledge.",
-                "teacher_activity": "Đặt câu hỏi mở, chiếu hình ảnh",
-                "student_activity": "Trả lời ngắn, chia sẻ trải nghiệm",
+                "content_vi": f"Hỏi kiến thức đã biết về “{topic}” (môn {subject}), ghi thuật ngữ lên bảng.",
+                "content_en": f"Elicit what students already know about “{topic}” in {subject}.",
+                "teacher_activity": f"Hỏi đúng kiến thức {topic}",
+                "student_activity": "Nêu thuật ngữ / sự kiện đã học",
             },
             {
-                "heading_vi": "Nội dung chính",
-                "heading_en": "Main content",
+                "heading_vi": "Hình thành kiến thức mới",
+                "heading_en": "Knowledge formation",
                 "duration": "15'",
-                "content_vi": f"Trình bày kiến thức cốt lõi về {topic} (lớp {grade} – môn {subject}) kèm ví dụ minh họa.",
-                "content_en": f"Present core knowledge about {topic} (grade {grade} – {subject}) with clear examples.",
-                "teacher_activity": "Giảng giải, kiểm tra hiểu",
-                "student_activity": "Ghi chú, hỏi đáp",
+                "content_vi": f"Giảng nội dung chính của “{topic}”: định nghĩa, ví dụ, ý nghĩa trong môn {subject}.",
+                "content_en": f"Teach the main content of “{topic}” with a clear example for {subject}.",
+                "teacher_activity": "Giảng kiến thức, ví dụ",
+                "student_activity": "Ghi chú kiến thức bài",
             },
             {
-                "heading_vi": "Hoạt động trải nghiệm",
-                "heading_en": "Experiential activity",
+                "heading_vi": "Luyện tập",
+                "heading_en": "Practice",
                 "duration": "15'",
-                "content_vi": "Học sinh làm việc nhóm, thảo luận và tạo sản phẩm nhỏ liên quan chủ đề, trình bày bằng tiếng Anh.",
-                "content_en": "Students work in groups, discuss, create a mini product, and present in English.",
-                "teacher_activity": "Quan sát, hỗ trợ nhóm",
-                "student_activity": "Thảo luận nhóm, trình bày",
+                "content_vi": f"Học sinh làm bài tập / phiếu ngắn sát “{topic}”, không phải trò chơi chung.",
+                "content_en": f"Students complete a short exercise that only works if they know “{topic}”.",
+                "teacher_activity": "Phát phiếu, chữa bài",
+                "student_activity": "Làm bài, trình bày đáp án",
             },
             {
-                "heading_vi": "Phản ánh & đánh giá",
-                "heading_en": "Reflection & assessment",
+                "heading_vi": "Vận dụng",
+                "heading_en": "Application",
                 "duration": "10'",
-                "content_vi": "Học sinh viết 3 điều đã học; giáo viên nhận xét nhanh và giao nhiệm vụ về nhà.",
-                "content_en": "Students write 3 takeaways; teacher gives quick feedback and assigns homework.",
-                "teacher_activity": "Nhận xét, tổng kết",
-                "student_activity": "Phản ánh, hoàn thành exit ticket",
+                "content_vi": f"Vận dụng kiến thức “{topic}” giải một tình huống/bài tập mở rộng của môn {subject}.",
+                "content_en": f"Apply “{topic}” to an extended task or real situation in {subject}.",
+                "teacher_activity": "Chốt kiến thức, giao bài về nhà",
+                "student_activity": "Trình bày cách vận dụng kiến thức bài",
             },
         ],
         "vocabulary": [
-            {"term": "experience", "meaning_vi": "trải nghiệm", "example": "Learning by experience helps students remember better."},
-            {"term": "concept", "meaning_vi": "khái niệm", "example": f"Today we learn the main concept of {topic}."},
-            {"term": "apply", "meaning_vi": "áp dụng", "example": "Apply the idea in a real situation."},
-            {"term": "reflect", "meaning_vi": "phản ánh", "example": "Reflect on what you learned today."},
-            {"term": "collaborate", "meaning_vi": "hợp tác", "example": "Collaborate with your group to finish the task."},
+            {"term": topic.split()[0] if topic else "topic", "meaning_vi": topic, "example": f"Today we study {topic}."},
+            {"term": "definition", "meaning_vi": "định nghĩa", "example": f"Write the definition of {topic}."},
+            {"term": "example", "meaning_vi": "ví dụ", "example": "Give one example from the lesson."},
+            {"term": "practice", "meaning_vi": "luyện tập", "example": "Practise the new knowledge."},
+            {"term": subject.split()[0] if subject else "subject", "meaning_vi": subject, "example": f"This is a {subject} lesson."},
         ],
         "assessment": {
-            "methods": ["Observation", "Oral check", "Exit ticket"],
-            "criteria": ["Participation", "Correct concepts", "Application"],
+            "methods": ["Oral check", "Short exercise", "Exit question"],
+            "criteria": ["Correct knowledge", "Correct terms", "Completed practice"],
         },
         "homework": [
-            f"Review key ideas about {topic}.",
-            "Write 5 English sentences using new vocabulary.",
-            "Prepare one real-life example for the next lesson.",
+            f"Học lại kiến thức cốt lõi của “{topic}”.",
+            f"Làm 3 câu luyện tập môn {subject} về chủ đề này.",
         ],
         "source": "template",
-        "note": "Bản mẫu tạm (chưa có GEMINI_API_KEY hoặc AI lỗi). Gắn key để tạo nội dung đầy đủ hơn.",
         "language": language,
     }
 
@@ -1226,129 +1546,355 @@ def _fallback_quiz(
 
 
 def _fallback_slides(grade: str, subject: str, topic: str, slide_count: int, language: str = "vi") -> dict:
-    slides = [
-        {
-            "layout": "title",
-            "title": topic,
-            "subtitle": f"{subject} · Experiential Learning",
-            "bullets": [grade, subject, "Hands-on exploration"],
-            "image_keyword": topic,
-            "notes": "Opening slide",
-        },
-        {
-            "layout": "content",
-            "title": "Learning Objectives",
-            "bullets": ["Understand core concepts", "Practice in groups", "Reflect and apply"],
-            "image_keyword": "classroom students",
-        },
-        {
-            "layout": "two_column",
-            "title": "Warm-up & Context",
-            "left_title": "Warm-up",
-            "right_title": "Real life",
-            "left_bullets": ["Open questions", "Share experiences"],
-            "right_bullets": ["Local examples", "Daily connections"],
-            "image_keyword": "discussion",
-        },
-        {
-            "layout": "cards",
-            "title": f"Core Ideas: {topic}",
-            "bullets": ["Define", "Explore", "Apply"],
-            "image_keyword": topic,
-        },
-        {
-            "layout": "table",
-            "title": "Key Vocabulary",
-            "table": {
-                "headers": ["Term", "Meaning", "Example"],
-                "rows": [
-                    ["concept", "main idea", f"We study {topic}."],
-                    ["practice", "guided activity", "Work in pairs."],
-                    ["reflect", "think back", "What did I learn?"],
-                ],
+    if _is_kieu_topic(subject, topic) or _is_literature_topic(subject, topic):
+        slides = [
+            {
+                "layout": "title",
+                "title": topic,
+                "subtitle": f"{subject} · {grade}",
+                "bullets": [grade, subject, "Nguyễn Du · lục bát · Thúy Kiều"],
+                "image_keyword": "truyen kieu nguyen du book vietnam literature class",
+                "notes": "Mở bài: ghi bảng Nguyễn Du – Truyện Kiều – lục bát. Hỏi HS nữ chính là ai.",
             },
-            "bullets": ["concept", "practice", "reflect"],
-        },
-        {
-            "layout": "content",
-            "title": "Group Activity",
-            "bullets": ["Discuss in teams", "Create a mini product", "Present findings"],
-            "image_keyword": "teamwork",
-        },
-        {
-            "layout": "two_column",
-            "title": "Examples & Practice",
-            "left_title": "Examples",
-            "right_title": "Quick check",
-            "left_bullets": ["Situation 1", "Situation 2"],
-            "right_bullets": ["Quiz question", "Peer feedback"],
-        },
-        {
-            "layout": "content",
-            "title": "Reflection",
-            "bullets": ["I learned...", "I will apply...", "I still wonder..."],
-            "image_keyword": "notebook writing",
-        },
-        {
-            "layout": "table",
-            "title": "Lesson Summary",
-            "table": {
-                "headers": ["Focus", "Action", "Outcome"],
-                "rows": [
-                    ["Knowledge", "Explain key ideas", "Clear understanding"],
-                    ["Skills", "Collaborate", "Shared product"],
-                    ["Attitude", "Care & responsibility", "Positive habits"],
+            {
+                "layout": "content",
+                "title": "Learning objectives",
+                "bullets": [
+                    "Name Nguyễn Du and the work Đoạn trường tân thanh",
+                    "Identify lục bát and four main characters",
+                    "Explain tài mệnh tương đố and chữ hiếu with one plot event",
                 ],
+                "image_keyword": "vietnam literature textbook truyen kieu classroom",
+                "notes": "Đọc mục tiêu: tác giả, thể thơ, nhân vật, chủ đề. Không nói kỹ năng sống chung.",
             },
-        },
-        {
-            "layout": "closing",
-            "title": "Thank You",
-            "bullets": ["Questions welcome", "See you next time"],
-            "image_keyword": "celebration",
-        },
-    ]
-    extras = [
-        {
-            "layout": "content",
-            "title": f"Why {topic} matters",
-            "bullets": ["School life connection", "Skills we build today", "Respect and responsibility"],
-            "image_keyword": "vietnamese students listening teacher classroom",
-        },
-        {
-            "layout": "two_column",
-            "title": "Do and Don't",
-            "left_title": "Do",
-            "right_title": "Don't",
-            "left_bullets": ["Listen and join in", "Help classmates", "Follow the teacher"],
-            "right_bullets": ["Talk over others", "Ignore the task", "Leave the group"],
-            "image_keyword": "vietnamese students classroom rules",
-        },
-        {
-            "layout": "content",
-            "title": "Step by step",
-            "bullets": ["Watch the model", "Try with a partner", "Share one sentence", "Improve together"],
-            "image_keyword": "students practising in pairs vietnam school",
-        },
-        {
-            "layout": "cards",
-            "title": "Roles in the activity",
-            "bullets": ["Leader", "Recorder", "Speaker", "Timekeeper"],
-            "image_keyword": "vietnamese students group roles classroom",
-        },
-        {
-            "layout": "content",
-            "title": "Check for understanding",
-            "bullets": ["One key idea", "One example from school", "One question for the teacher"],
-            "image_keyword": "student answering question vietnam classroom",
-        },
-        {
-            "layout": "content",
-            "title": "Home connection",
-            "bullets": ["Tell family one idea", "Practise one phrase", "Bring one example next lesson"],
-            "image_keyword": "vietnam family home students homework",
-        },
-    ]
+            {
+                "layout": "two_column",
+                "title": "Author and the work",
+                "left_title": "Nguyễn Du",
+                "right_title": "Truyện Kiều",
+                "left_bullets": ["Poet of late Lê – early Nguyễn", "Courtesy name Tố Như", "Wrote from folk tale Kim Vân Kiều"],
+                "right_bullets": ["Also called Đoạn trường tân thanh", "A verse novel in lục bát", "Heroine: Vương Thúy Kiều"],
+                "image_keyword": "nguyen du portrait vietnam poet classroom poster",
+                "notes": "Chốt: Nguyễn Du sáng tác Truyện Kiều / Đoạn trường tân thanh bằng lục bát.",
+            },
+            {
+                "layout": "cards",
+                "title": "Form: lục bát",
+                "bullets": [
+                    "Six-syllable line + eight-syllable line",
+                    "Rhyme links the 6th sound of the 8-syllable line",
+                    "Used for long narrative verse in Vietnamese",
+                    "Truyện Kiều is the model lục bát work",
+                ],
+                "image_keyword": "luc bat verse lines chalkboard vietnam",
+                "notes": "Viết một cặp lục bát mẫu lên bảng; hỏi HS đếm tiếng 6–8.",
+            },
+            {
+                "layout": "table",
+                "title": "Main characters",
+                "table": {
+                    "headers": ["Character", "Role", "Key event"],
+                    "rows": [
+                        ["Thúy Kiều", "Heroine", "Sells herself to save her father"],
+                        ["Thúy Vân", "Younger sister", "Marries Kim Trọng in Kiều’s place"],
+                        ["Kim Trọng", "Beloved", "Parted from Kiều, later reunited"],
+                        ["Hoạn Thư", "Jealous wife", "Torments Kiều out of jealousy"],
+                    ],
+                },
+                "bullets": ["Kiều", "Vân", "Kim Trọng", "Hoạn Thư"],
+                "notes": "HS điền miệng vai trò từng nhân vật. Sai tên là sai kiến thức bài.",
+            },
+            {
+                "layout": "two_column",
+                "title": "Plot you must know",
+                "left_title": "What happens",
+                "right_title": "Why it matters",
+                "left_bullets": [
+                    "Kiều meets Kim Trọng and pledges love",
+                    "Her father is framed; she sells herself",
+                    "She suffers in a brothel and under Hoạn Thư",
+                ],
+                "right_bullets": [
+                    "Love is broken by family disaster",
+                    "Chữ hiếu: she sacrifices for her father",
+                    "Tài mệnh tương đố: talent meets a hard fate",
+                ],
+                "image_keyword": "thuy kieu story scene vietnam literature",
+                "notes": "Kể 3 mốc: gặp Kim Trọng – bán mình – Hoạn Thư. Hỏi chữ hiếu nằm ở mốc nào.",
+            },
+            {
+                "layout": "content",
+                "title": "Themes to teach",
+                "bullets": [
+                    "Tài mệnh tương đố: beauty and talent bring a bitter fate",
+                    "Chữ hiếu: Kiều sells herself to save her father",
+                    "Compassion for the fallen woman in feudal society",
+                    "Hope of reunion after years of suffering",
+                ],
+                "image_keyword": "vietnam students discussing truyen kieu themes",
+                "notes": "Bắt HS lấy 1 sự kiện chứng minh tài mệnh hoặc chữ hiếu.",
+            },
+            {
+                "layout": "table",
+                "title": "Lesson vocabulary",
+                "table": {
+                    "headers": ["Term", "Meaning", "Use in this lesson"],
+                    "rows": [
+                        ["lục bát", "6–8 verse form", "Truyện Kiều is written in lục bát."],
+                        ["filial piety", "chữ hiếu", "Kiều shows filial piety."],
+                        ["fate", "số mệnh", "Talent conflicts with fate."],
+                        ["heroine", "nữ chính", "Thúy Kiều is the heroine."],
+                    ],
+                },
+                "bullets": ["lục bát", "filial piety", "fate", "heroine"],
+                "notes": "Đọc thuật ngữ; yêu cầu đặt câu có tên nhân vật.",
+            },
+            {
+                "layout": "content",
+                "title": "Close reading task",
+                "bullets": [
+                    "Fill the character–role–event table",
+                    "Quote one fact that shows chữ hiếu",
+                    "Explain in 4 sentences why Kiều must leave Kim Trọng",
+                ],
+                "image_keyword": "students writing character table literature class vietnam",
+                "notes": "Phát phiếu nhân vật. Không cho làm poster kỹ năng sống.",
+            },
+            {
+                "layout": "closing",
+                "title": "Review Truyện Kiều",
+                "bullets": [
+                    "Author: Nguyễn Du · Form: lục bát",
+                    "Homework: 6 English sentences on chữ hiếu",
+                ],
+                "image_keyword": "vietnam classroom end of literature lesson",
+                "notes": "Chốt 3 ý: tác giả, thể thơ, chữ hiếu. Giao bài về nhà.",
+            },
+        ]
+        extras = [
+            {
+                "layout": "two_column",
+                "title": "Kiều and Vân",
+                "left_title": "Thúy Kiều",
+                "right_title": "Thúy Vân",
+                "left_bullets": ["Elder sister", "More talented and beautiful", "Bears a tragic fate"],
+                "right_bullets": ["Younger sister", "Gentle, less striking", "Marries Kim Trọng first"],
+                "image_keyword": "two sisters comparison literature vietnam",
+                "notes": "So sánh tài sắc và số phận hai chị em. Hỏi vì sao Vân lấy Kim Trọng.",
+            },
+            {
+                "layout": "content",
+                "title": "Hoạn Thư episode",
+                "bullets": [
+                    "Hoạn Thư is the jealous wife of Thúc Sinh",
+                    "She captures Kiều and makes her a servant",
+                    "The episode shows cruelty born of jealousy",
+                    "Kiều later meets her again and chooses mercy",
+                ],
+                "image_keyword": "hoan thu truyen kieu scene classroom",
+                "notes": "Chốt: Hoạn Thư hành hạ Kiều vì ghen. Hỏi HS Kiều xử sự ra sao khi gặp lại.",
+            },
+            {
+                "layout": "cards",
+                "title": "Check the work",
+                "bullets": [
+                    "Who wrote Truyện Kiều?",
+                    "What verse form is used?",
+                    "Why does Kiều sell herself?",
+                    "Name Kim Trọng and Hoạn Thư’s roles",
+                ],
+                "image_keyword": "oral check literature vietnam classroom",
+                "notes": "Hỏi nhanh 4 câu kiến thức. Sai tên nhân vật thì chữa ngay.",
+            },
+            {
+                "layout": "content",
+                "title": "A lục bát couplet",
+                "bullets": [
+                    "Read one 6–8 couplet from the opening",
+                    "Count the syllables: 6 then 8",
+                    "Find the linking rhyme",
+                    "Say what the couplet tells about Kiều",
+                ],
+                "image_keyword": "poetry lines luc bat chalkboard vietnam",
+                "notes": "Đọc một cặp lục bát; HS đếm tiếng và chỉ vần.",
+            },
+            {
+                "layout": "content",
+                "title": "Homework on the text",
+                "bullets": [
+                    "Learn: author, form, four characters",
+                    "Write 6 English sentences on chữ hiếu",
+                    "Prepare one event that shows tài mệnh tương đố",
+                ],
+                "image_keyword": "homework notebook truyen kieu vietnam",
+                "notes": "Giao đúng kiến thức tác phẩm, không giao ‘kể về trải nghiệm’.",
+            },
+        ]
+    else:
+        slides = [
+            {
+                "layout": "title",
+                "title": topic,
+                "subtitle": f"{subject} · {grade}",
+                "bullets": [grade, subject, f"Teaching the topic: {topic}"],
+                "image_keyword": f"{subject} {topic} vietnam classroom",
+                "notes": f"Mở bài môn {subject}: hôm nay học kiến thức “{topic}”.",
+            },
+            {
+                "layout": "content",
+                "title": "Learning objectives",
+                "bullets": [
+                    f"State the core knowledge of “{topic}” in {subject}",
+                    f"Use the correct {subject} terms for this topic",
+                    f"Complete a short exercise that needs “{topic}”",
+                ],
+                "image_keyword": f"{subject} lesson objectives vietnam classroom",
+                "notes": f"Đọc mục tiêu kiến thức bài “{topic}”, không đọc khẩu hiệu trải nghiệm.",
+            },
+            {
+                "layout": "two_column",
+                "title": f"Warm-up on {topic}",
+                "left_title": "Ask",
+                "right_title": "We will learn",
+                "left_bullets": [
+                    f"What do you already know about {topic}?",
+                    f"Which {subject} terms belong to this topic?",
+                ],
+                "right_bullets": [
+                    f"The key idea of {topic}",
+                    "One worked example",
+                    "One practice task",
+                ],
+                "image_keyword": f"teacher asking about {topic} vietnam class",
+                "notes": f"Kích hoạt kiến thức nền đúng “{topic}”.",
+            },
+            {
+                "layout": "cards",
+                "title": f"Core knowledge: {topic}",
+                "bullets": [
+                    f"Definition / main fact of {topic}",
+                    f"A clear example from {subject}",
+                    f"How this idea is used in {grade}",
+                ],
+                "image_keyword": f"{topic} teaching board {subject}",
+                "notes": f"Giảng định nghĩa và ví dụ của “{topic}”.",
+            },
+            {
+                "layout": "table",
+                "title": "Key terms",
+                "table": {
+                    "headers": ["Term", "Meaning", "In this lesson"],
+                    "rows": [
+                        [topic.split()[0] if topic else "term", topic, f"We study {topic}."],
+                        ["definition", "định nghĩa", f"Write the definition of {topic}."],
+                        ["example", "ví dụ", f"Give one {subject} example."],
+                    ],
+                },
+                "bullets": ["definition", "example", topic],
+                "notes": f"Chốt thuật ngữ môn {subject} gắn với “{topic}”.",
+            },
+            {
+                "layout": "content",
+                "title": f"Practice: {topic}",
+                "bullets": [
+                    f"Complete a short task that only works if you know {topic}",
+                    f"Use {subject} terms in the answer",
+                    "Check and correct with the class",
+                ],
+                "image_keyword": f"students practising {topic} {subject} vietnam",
+                "notes": f"Phiếu luyện tập sát “{topic}”, không phải trò chơi chung.",
+            },
+            {
+                "layout": "two_column",
+                "title": "Example and check",
+                "left_title": "Worked example",
+                "right_title": "Quick check",
+                "left_bullets": [f"A model item on {topic}", "Show the steps / evidence"],
+                "right_bullets": [f"One question on {topic}", "Peer check the answer"],
+            },
+            {
+                "layout": "content",
+                "title": f"Consolidate {topic}",
+                "bullets": [
+                    f"Restate two key facts about {topic}",
+                    "Name one term you must remember",
+                    "Ask one remaining content question",
+                ],
+                "image_keyword": f"students summarising {topic} vietnam classroom",
+                "notes": f"HS nêu lại kiến thức “{topic}”, không viết ‘I learned / I will apply’ chung.",
+            },
+            {
+                "layout": "table",
+                "title": "Lesson summary",
+                "table": {
+                    "headers": ["Focus", "Content", "Check"],
+                    "rows": [
+                        ["Knowledge", f"Core idea of {topic}", "Say it in one sentence"],
+                        ["Terms", f"{subject} vocabulary", "Use two terms correctly"],
+                        ["Practice", f"Exercise on {topic}", "Correct the class task"],
+                    ],
+                },
+            },
+            {
+                "layout": "closing",
+                "title": f"Review: {topic}",
+                "bullets": [f"Homework: 3 items on {topic}", "Questions on today’s knowledge"],
+                "image_keyword": f"{subject} lesson close vietnam classroom",
+                "notes": f"Chốt kiến thức “{topic}” và giao bài về nhà đúng môn.",
+            },
+        ]
+        extras = [
+            {
+                "layout": "content",
+                "title": f"Why {topic} is taught",
+                "bullets": [
+                    f"It is required knowledge in {subject} for {grade}",
+                    "It unlocks the next lesson in this unit",
+                    f"Students need it to solve {subject} tasks",
+                ],
+                "image_keyword": f"{subject} textbook {topic} vietnam",
+                "notes": f"Nêu vị trí kiến thức “{topic}” trong môn {subject}.",
+            },
+            {
+                "layout": "two_column",
+                "title": "Common mistakes",
+                "left_title": "Watch out",
+                "right_title": "Correct",
+                "left_bullets": [f"Mixing {topic} with a nearby idea", "Using the wrong term"],
+                "right_bullets": [f"Keep the definition of {topic}", f"Use {subject} terms only"],
+                "image_keyword": f"teacher correcting {topic} on board vietnam",
+            },
+            {
+                "layout": "content",
+                "title": "Guided example",
+                "bullets": [
+                    f"Read a model item about {topic}",
+                    "Mark the key term / step",
+                    "Try a similar item in pairs",
+                ],
+                "image_keyword": f"worked example {topic} {subject} vietnam",
+            },
+            {
+                "layout": "cards",
+                "title": f"Check: {topic}",
+                "bullets": [
+                    f"What is the main idea of {topic}?",
+                    "Give one correct term",
+                    "Give one example from the lesson",
+                ],
+                "image_keyword": f"oral check {subject} vietnam classroom",
+            },
+            {
+                "layout": "content",
+                "title": "Homework",
+                "bullets": [
+                    f"Review the core knowledge of {topic}",
+                    f"Do 3 {subject} items on this topic",
+                    "Prepare one question for next class",
+                ],
+                "image_keyword": f"homework {topic} {subject} notebook",
+            },
+        ]
     n = max(6, min(int(slide_count or 10), 20))
     title_slide, closing = slides[0], slides[-1]
     middles = slides[1:-1] + extras
@@ -1410,7 +1956,7 @@ def generate_lesson_draft(
     def _finish(data: dict | None, source: str | None) -> dict:
         fb = _fallback_lesson(grade, subject, topic, language, description)
         if data:
-            out = _merge_ai_json(fb, data)
+            out = _scrub_generic_lesson(_merge_ai_json(fb, data), fb)
             out["source"] = source or "gemini"
         else:
             out = fb
@@ -1423,38 +1969,41 @@ def generate_lesson_draft(
         out["language"] = language
         out["theme_color"] = theme_color
         out["theme_accent"] = theme_accent
+        out["sections"] = _normalize_gdpt_sections(out.get("sections"))
         out.pop("note", None)
         return _json_safe(out)
 
+    teach = _teaching_content_rules(grade, subject, topic)
     prompt = f"""
 {brief}
-Soạn giáo án trải nghiệm SONG NGỮ, JSON đầy đủ một lần (không cắt):
+{teach}
+Soạn giáo án GIẢNG DẠY SONG NGỮ đúng môn {subject} và đúng CHỦ ĐỀ “{topic}”. JSON đầy đủ một lần (không cắt):
 {{
   "title_vi": "...", "title_en": "...",
-  "description": "2-3 câu tiếng Việt",
+  "description": "2-3 câu: dạy kiến thức gì của chủ đề này",
   "duration_minutes": 45,
   "materials": ["đồ dùng 1", "đồ dùng 2", "đồ dùng 3", "đồ dùng 4"],
-  "objectives_vi": ["mục tiêu 1", "mục tiêu 2", "mục tiêu 3"],
-  "objectives_en": ["objective 1", "objective 2", "objective 3"],
-  "core_content_vi": "60-90 chữ đúng chủ đề, trường Việt Nam",
-  "core_content_en": "English equivalent, 60-90 words",
+  "objectives_vi": ["mục tiêu kiến thức 1", "mục tiêu kiến thức 2", "mục tiêu kiến thức 3"],
+  "objectives_en": ["knowledge objective 1", "knowledge objective 2", "knowledge objective 3"],
+  "core_content_vi": "60-90 chữ: kiến thức then chốt của “{topic}” (tên, sự kiện, công thức, nhân vật…)",
+  "core_content_en": "English equivalent, 60-90 words, same facts",
   "sections": [
-    {{"heading_vi":"Khởi động","heading_en":"Warm-up","duration":"5'","content_vi":"3-5 câu","content_en":"3-5 sentences","teacher_activity":"...","student_activity":"...","procedure_steps":["Bước 1","Bước 2"]}},
-    {{"heading_vi":"Hình thành kiến thức","heading_en":"Knowledge","duration":"10'","content_vi":"3-5 câu","content_en":"...","teacher_activity":"...","student_activity":"...","procedure_steps":["Bước 1","Bước 2"]}},
-    {{"heading_vi":"Trải nghiệm chính","heading_en":"Experience","duration":"15'","content_vi":"3-5 câu","content_en":"...","teacher_activity":"...","student_activity":"...","procedure_steps":["Bước 1","Bước 2"]}},
-    {{"heading_vi":"Luyện tập","heading_en":"Practice","duration":"8'","content_vi":"3-5 câu","content_en":"...","teacher_activity":"...","student_activity":"...","procedure_steps":["Bước 1","Bước 2"]}},
-    {{"heading_vi":"Phản ánh – đánh giá","heading_en":"Reflection","duration":"7'","content_vi":"3-5 câu","content_en":"...","teacher_activity":"...","student_activity":"...","procedure_steps":["Bước 1","Bước 2"]}}
+    {{"heading_vi":"Mở đầu (Khởi động)","heading_en":"Opening (Warm-up)","duration":"5'","content_vi":"3-5 câu kết nối kiến thức, đặt vấn đề","content_en":"3-5 sentences","teacher_activity":"...","student_activity":"...","procedure_steps":["Bước 1","Bước 2"]}},
+    {{"heading_vi":"Hình thành kiến thức mới","heading_en":"Knowledge formation","duration":"15'","content_vi":"3-5 câu giảng đúng “{topic}”","content_en":"...","teacher_activity":"...","student_activity":"...","procedure_steps":["Bước 1","Bước 2"]}},
+    {{"heading_vi":"Luyện tập","heading_en":"Practice","duration":"15'","content_vi":"3-5 câu bài tập sát “{topic}”","content_en":"...","teacher_activity":"...","student_activity":"...","procedure_steps":["Bước 1","Bước 2"]}},
+    {{"heading_vi":"Vận dụng","heading_en":"Application","duration":"10'","content_vi":"3-5 câu vận dụng kiến thức vào tình huống/bài tập","content_en":"...","teacher_activity":"...","student_activity":"...","procedure_steps":["Bước 1","Bước 2"]}}
   ],
-  "vocabulary": [{{"term":"...","meaning_vi":"...","example":"..."}}],
-  "homework": ["nhiệm vụ 1", "nhiệm vụ 2"]
+  "vocabulary": [{{"term":"thuật ngữ môn học","meaning_vi":"...","example":"câu có kiến thức “{topic}”"}}],
+  "homework": ["bài tập đúng chủ đề 1", "bài tập đúng chủ đề 2"]
 }}
-Đúng lớp {grade}, môn {subject}, chủ đề "{topic}". 5 sections, 5 từ vựng. Mỗi content 3-5 câu. JSON hoàn chỉnh.
+Lớp {grade}, môn {subject}, CHỦ ĐỀ “{topic}”. ĐÚNG 4 hoạt động GDPT 2018, 5 từ vựng môn học. Mỗi content 3-5 câu kiến thức. JSON hoàn chỉnh.
 """
     compact = f"""
 {brief}
-JSON giáo án song ngữ ngắn, đủ 4 phần, không cắt:
-{{"title_vi":"...","title_en":"...","objectives_vi":["..."],"objectives_en":["..."],"core_content_vi":"...","core_content_en":"...","sections":[{{"heading_vi":"Khởi động","heading_en":"Warm-up","duration":"5'","content_vi":"...","content_en":"...","teacher_activity":"...","student_activity":"..."}},{{"heading_vi":"Kiến thức","heading_en":"Knowledge","duration":"12'","content_vi":"...","content_en":"...","teacher_activity":"...","student_activity":"..."}},{{"heading_vi":"Trải nghiệm","heading_en":"Activity","duration":"18'","content_vi":"...","content_en":"...","teacher_activity":"...","student_activity":"..."}},{{"heading_vi":"Phản ánh","heading_en":"Reflection","duration":"10'","content_vi":"...","content_en":"...","teacher_activity":"...","student_activity":"..."}}],"vocabulary":[{{"term":"...","meaning_vi":"...","example":"..."}}],"homework":["..."]}}
-Chủ đề "{topic}".
+{teach}
+JSON giáo án GDPT 2018 song ngữ, đúng 4 hoạt động, không cắt:
+{{"title_vi":"...","title_en":"...","objectives_vi":["..."],"objectives_en":["..."],"core_content_vi":"...","core_content_en":"...","sections":[{{"heading_vi":"Mở đầu (Khởi động)","heading_en":"Opening (Warm-up)","duration":"5'","content_vi":"...","content_en":"...","teacher_activity":"...","student_activity":"..."}},{{"heading_vi":"Hình thành kiến thức mới","heading_en":"Knowledge formation","duration":"15'","content_vi":"...","content_en":"...","teacher_activity":"...","student_activity":"..."}},{{"heading_vi":"Luyện tập","heading_en":"Practice","duration":"15'","content_vi":"...","content_en":"...","teacher_activity":"...","student_activity":"..."}},{{"heading_vi":"Vận dụng","heading_en":"Application","duration":"10'","content_vi":"...","content_en":"...","teacher_activity":"...","student_activity":"..."}}],"vocabulary":[{{"term":"...","meaning_vi":"...","example":"..."}}],"homework":["..."]}}
+Môn {subject}. CHỦ ĐỀ “{topic}”. Thuật ngữ và nội dung đúng môn GDPT 2018.
 """
     try:
         if light:
@@ -1541,10 +2090,13 @@ def generate_quiz_draft(
       "points": 1
     }
   ]"""
+    teach = _teaching_content_rules(grade, subject, topic)
     prompt = f"""
 {brief}
+{teach}
 
-This is a GRADED EXAM paper for {subject} / {topic} — NOT an ice-breaker, NOT experiential-learning filler.
+This is a GRADED EXAM paper for {subject} / {topic} (GDPT 2018) — real subject knowledge and terminology.
+NOT an ice-breaker, NOT experiential-learning filler unless subject is Hoạt động trải nghiệm.
 Write {num_questions} REAL questions. JSON only:
 {{
   "title": "Practice: {topic}",
@@ -1760,7 +2312,14 @@ def _enrich_image_keywords(slides: list[dict], topic: str) -> list[dict]:
     return slides
 
 
-def _fit_slide_count(slides: list, slide_count: int, topic: str, language: str) -> list[dict]:
+def _fit_slide_count(
+    slides: list,
+    slide_count: int,
+    topic: str,
+    language: str,
+    grade: str = "",
+    subject: str = "",
+) -> list[dict]:
     """Cắt hoặc bổ sung cho đúng số slide giáo viên yêu cầu."""
     n = max(6, min(int(slide_count or 10), 20))
     items = [s for s in (slides or []) if isinstance(s, dict)]
@@ -1779,7 +2338,7 @@ def _fit_slide_count(slides: list, slide_count: int, topic: str, language: str) 
             out.append(tail)
         out[0]["layout"] = "title"
         return out[:n]
-    fb = _fallback_slides("", "", topic, n, language).get("slides") or []
+    fb = _fallback_slides(grade, subject, topic, n, language).get("slides") or []
     closing = None
     core = list(items)
     if core and str(core[-1].get("layout") or "") == "closing":
@@ -1860,9 +2419,10 @@ def generate_pptx_draft(
             + json.dumps(brief, ensure_ascii=False)[:4500]
         )
         follow_lesson = (
-            "- Map slides to lesson sections in order (khởi động → kiến thức → hoạt động → luyện tập → phản ánh).\n"
-            "- Include one slide for objectives and one vocabulary/table slide from the lesson.\n"
-            "- Reuse key points from section content; keep the requested language.\n"
+            "- Map slides to GDPT 2018 lesson flow: Mở đầu → Hình thành kiến thức mới → Luyện tập → Vận dụng.\n"
+            "- Include one slide for knowledge objectives and one vocabulary/table slide from the lesson.\n"
+            "- Reuse key facts (names, events, formulas) from section content; keep the requested language.\n"
+            "- Match the subject’s terminology; do not replace with generic experiential slogans.\n"
         )
 
     brief_txt = _teacher_brief(
@@ -1875,12 +2435,14 @@ def generate_pptx_draft(
         "Presenter notes (field notes) MUST be Vietnamese for the teacher: cách giảng slide này, câu hỏi hỏi HS, thời gian gợi ý. "
         "image_keyword and image_scene in English."
     )
+    teach = _teaching_content_rules(grade, subject, topic)
     system_en = (
-        "You are a senior instructional designer creating classroom PowerPoint decks "
-        "for Vietnamese secondary schools (Hoạt động trải nghiệm). "
+        "You are a subject teacher designing classroom PowerPoint decks to TEACH "
+        "the exact school subject and topic (GDPT 2018), not generic experiential activities. "
+        "Every title and bullet must be knowledge of that topic. "
         "On-slide text is English. Teacher presenter notes are Vietnamese. "
         "When a lesson plan is provided, the slides MUST follow that plan closely. "
-        "Prefer Vietnamese school / Vietnam imagery (cờ đỏ sao vàng, học sinh Việt Nam, sân trường). "
+        "Prefer Vietnamese school / Vietnam imagery matching THIS topic. "
         "image_keyword and image_scene must describe the EXACT photo of THAT slide, Vietnam-first. "
         "Return valid JSON only."
     )
@@ -1901,8 +2463,9 @@ def generate_pptx_draft(
 
     prompt = f"""
 {brief_txt}
+{teach}
 
-Tạo dàn ý PowerPoint JSON (slide đẹp, giảng được, ảnh sát từng slide):
+Tạo dàn ý PowerPoint JSON để GIẢNG DẠY đúng môn {subject}, đúng CHỦ ĐỀ “{topic}” (slide đẹp, giảng được, ảnh sát từng slide):
 {{
   "title": "...",
   "grade": "{grade}",
@@ -1944,15 +2507,17 @@ Rules:
   quốc ca → "students singing vietnam national anthem";
   tôn trọng → "students saluting vietnam national flag".
 - Cấm keyword chung: background, abstract, education, learning, template.
-- Mỗi content slide có 1 ý kiến thức thật lấy từ giáo án/mô tả, không slogan.
+- Mỗi content slide có 1 ý kiến thức thật của “{topic}” (tên, sự kiện, công thức, nhân vật), không slogan trải nghiệm.
+- Cấm bullet: hands-on exploration, create a mini product, I learned / I will apply, classroom roles (Leader/Recorder).
 - Màu chủ đạo: {theme_color} / {theme_accent}.
 {context_hint}
 """
     first_n = min(slide_count, 7)
     compact_pptx = (
-        f"{brief_txt}\nJSON PowerPoint, exactly {first_n} slides, short bullets, complete JSON.\n"
+        f"{brief_txt}\n{teach}\n"
+        f"JSON PowerPoint giảng dạy môn {subject}, chủ đề “{topic}”, exactly {first_n} slides, short knowledge bullets, complete JSON.\n"
         '{"title":"...","slides":[{"layout":"title","title":"...","bullets":["..."],"notes":"..."}]}\n'
-        "Slide 1 title. English on slide, Vietnamese notes."
+        "Slide 1 title. English on slide, Vietnamese notes. No experiential slogans."
     )
     try:
         data, source = _ask_studio_json(
@@ -1972,8 +2537,11 @@ Rules:
             last_batch = len(slides) + need >= slide_count
             more, src2 = _ask_studio_json(
                 f"""{brief_txt}
-Create exactly {need} MORE slides. JSON: {{"slides":[...]}}.
+{teach}
+Create exactly {need} MORE slides that TEACH more knowledge of “{topic}” in {subject}.
+JSON: {{"slides":[...]}}.
 Do not repeat these titles: {titles}.
+Each slide = author / character / event / formula / definition of THIS topic — not classroom slogans.
 English on-slide text, Vietnamese notes. Topic "{topic}".
 {"The LAST slide must be layout=closing." if last_batch else "Do not use closing layout yet."}
 Short bullets. Complete JSON, do not truncate.
@@ -1989,7 +2557,10 @@ Short bullets. Complete JSON, do not truncate.
             rounds += 1
         normalized = _normalize_pptx_slides(slides, topic, language)
         normalized = _enrich_image_keywords(normalized, topic)
-        normalized = _fit_slide_count(normalized, slide_count, topic, language)
+        normalized = _fit_slide_count(normalized, slide_count, topic, language, grade, subject)
+        normalized = _scrub_generic_slides(
+            normalized, _fallback_slides(grade, subject, topic, slide_count, language).get("slides") or [],
+        )
         return _pack(data or {"title": topic}, source or "gemini", normalized)
     except Exception:
         current_app.logger.exception("generate_pptx_draft failed")
@@ -1999,7 +2570,10 @@ Short bullets. Complete JSON, do not truncate.
             normalized = _enrich_image_keywords(
                 _normalize_pptx_slides(slides or [], topic, language), topic,
             )
-            normalized = _fit_slide_count(normalized, slide_count, topic, language)
+            normalized = _fit_slide_count(normalized, slide_count, topic, language, grade, subject)
+            normalized = _scrub_generic_slides(
+                normalized, _fallback_slides(grade, subject, topic, slide_count, language).get("slides") or [],
+            )
             return _pack(compact or {"title": topic}, src or "gemini", normalized)
         except Exception:
             current_app.logger.exception("generate_pptx_draft compact failed")
@@ -2089,91 +2663,119 @@ def _mcq_items(raw, limit: int = 6) -> list[dict]:
 
 
 def _fallback_eight_step(grade: str, subject: str, topic: str, description: str = "") -> dict:
+    lesson = _fallback_lesson(grade, subject, topic, "en", description)
+    core_en = lesson.get("core_content_en") or lesson.get("core_content_vi") or topic
+    vocab = []
+    for v in (lesson.get("vocabulary") or [])[:6]:
+        vocab.append({
+            "word": v.get("term") or topic,
+            "ipa": "",
+            "meaning_vi": v.get("meaning_vi") or "",
+            "example_sentence": v.get("example") or f"We study {topic}.",
+            "category": "subject",
+            "difficulty": "intermediate",
+        })
+    if not vocab:
+        vocab = [{"word": topic, "ipa": "", "meaning_vi": topic, "example_sentence": f"Today: {topic}.", "category": "subject", "difficulty": "beginner"}]
+    pairs = [{"left": v["word"], "right": v["meaning_vi"]} for v in vocab[:4]]
+    if _is_kieu_topic(subject, topic):
+        warm = [
+            {
+                "question": "Who wrote Truyện Kiều?",
+                "type": "multiple_choice",
+                "options": ["Nguyễn Du", "Nguyễn Trãi", "Hồ Xuân Hương", "Tố Hữu"],
+                "correct_answer": "Nguyễn Du",
+            },
+            {
+                "question": "Who is the heroine of Truyện Kiều?",
+                "type": "multiple_choice",
+                "options": ["Thúy Kiều", "Thúy Vân", "Hoạn Thư", "Kim Trọng"],
+                "correct_answer": "Thúy Kiều",
+            },
+        ]
+        read_qs = [
+            {
+                "question": "In which verse form is Truyện Kiều written?",
+                "type": "multiple_choice",
+                "options": ["lục bát", "song thất lục bát", "thơ tứ tuyệt", "prose only"],
+                "correct_answer": "lục bát",
+            },
+            {
+                "question": "Why does Thúy Kiều sell herself?",
+                "type": "multiple_choice",
+                "options": ["To save her father", "To marry Kim Trọng", "To flee Hoạn Thư", "To study abroad"],
+                "correct_answer": "To save her father",
+            },
+        ]
+    else:
+        warm = [
+            {
+                "question": f"Which subject are we studying today?",
+                "type": "multiple_choice",
+                "options": [subject, "Experiential Learning only", "Unrelated topic", "Free time"],
+                "correct_answer": subject,
+            },
+            {
+                "question": f"What is today's topic in {subject}?",
+                "type": "multiple_choice",
+                "options": [topic, "A random slogan", "Skip the lesson", "No topic"],
+                "correct_answer": topic,
+            },
+        ]
+        read_qs = [
+            {
+                "question": f"The passage is mainly about which topic?",
+                "type": "multiple_choice",
+                "options": [topic, "Classroom rules only", "Unrelated skills", "No main idea"],
+                "correct_answer": topic,
+            },
+            {
+                "question": f"This lesson belongs to which subject?",
+                "type": "multiple_choice",
+                "options": [subject, "Math only", "PE only", "None"],
+                "correct_answer": subject,
+            },
+        ]
     return {
-        "title": topic or "Experiential lesson",
-        "description": description or f"An 8-step English lesson on {topic} for {grade}.",
+        "title": f"{subject}: {topic}",
+        "description": description or f"GDPT 2018 · {grade} · {subject} · {topic}.",
         "duration_minutes": 45,
-        "warm_up": {
-            "questions": [
-                {
-                    "question": f"What do you already know about {topic}?",
-                    "type": "multiple_choice",
-                    "options": ["I have tried it", "I have heard about it", "I am not sure", "It is new to me"],
-                    "correct_answer": "I have heard about it",
-                },
-                {
-                    "question": f"Why is {topic} useful for students?",
-                    "type": "multiple_choice",
-                    "options": ["It builds life skills", "It wastes time", "It is only for tests", "It has no meaning"],
-                    "correct_answer": "It builds life skills",
-                },
-            ]
-        },
-        "vocabulary": [
-            {"word": "experience", "ipa": "/ɪkˈspɪəriəns/", "meaning_vi": "trải nghiệm", "example_sentence": "We learn by experience.", "category": "school_life", "difficulty": "beginner"},
-            {"word": "community", "ipa": "/kəˈmjuːnəti/", "meaning_vi": "cộng đồng", "example_sentence": "Students serve the community.", "category": "community", "difficulty": "beginner"},
-            {"word": "respect", "ipa": "/rɪˈspekt/", "meaning_vi": "tôn trọng", "example_sentence": "We show respect at the flag ceremony.", "category": "culture", "difficulty": "beginner"},
-            {"word": "collaborate", "ipa": "/kəˈlæbəreɪt/", "meaning_vi": "hợp tác", "example_sentence": "Collaborate with your group.", "category": "school_life", "difficulty": "intermediate"},
-            {"word": "reflect", "ipa": "/rɪˈflekt/", "meaning_vi": "phản ánh", "example_sentence": "Reflect on what you learned today.", "category": "school_life", "difficulty": "intermediate"},
-            {"word": topic.split()[0] if topic else "activity", "ipa": "", "meaning_vi": topic or "hoạt động", "example_sentence": f"Today we explore {topic}.", "category": "school_life", "difficulty": "beginner"},
-        ],
+        "warm_up": {"questions": warm},
+        "vocabulary": vocab,
         "reading": {
-            "passage": (
-                f"{topic} is an important experiential activity for {grade} students. "
-                "In Vietnamese schools, students learn by doing: they observe, discuss, and create a small product. "
-                "This helps them use English, work in teams, and connect the lesson with real life."
+            "passage": core_en if len(str(core_en)) > 40 else (
+                f"In {grade} {subject}, students study “{topic}”. "
+                f"They learn key terms and facts, practise exercises, then apply the knowledge."
             ),
-            "translation": (
-                f"{topic} là hoạt động trải nghiệm quan trọng với học sinh {grade}. "
-                "Học sinh học bằng cách làm: quan sát, thảo luận và tạo sản phẩm nhỏ. "
-                "Điều này giúp các em dùng tiếng Anh, làm việc nhóm và gắn bài học với đời sống."
-            ),
-            "questions": [
-                {
-                    "question": f"What is the main idea of the passage about {topic}?",
-                    "type": "multiple_choice",
-                    "options": ["Learning by doing", "Memorising only", "Skipping group work", "Avoiding English"],
-                    "correct_answer": "Learning by doing",
-                },
-                {
-                    "question": "What do students create in the activity?",
-                    "type": "multiple_choice",
-                    "options": ["A small product", "A long exam", "Nothing", "Only homework"],
-                    "correct_answer": "A small product",
-                },
-            ],
+            "translation": lesson.get("core_content_vi") or f"Bài học môn {subject} về “{topic}” theo GDPT 2018.",
+            "questions": read_qs,
         },
         "video": {
-            "video_prompt": f"Short classroom video: Vietnamese students practising {topic} in English.",
+            "video_prompt": f"Classroom video: {grade} students learning {topic} in {subject} (English medium).",
             "subtitles": [
-                {"start": 0, "end": 8, "text": f"Today we learn about {topic}."},
-                {"start": 8, "end": 16, "text": "Watch, discuss, and try it yourself."},
+                {"start": 0, "end": 8, "text": f"Today: {topic} in {subject}."},
+                {"start": 8, "end": 16, "text": "Read, practise, then apply the knowledge."},
             ],
         },
         "interactive": {
             "activities": [{
                 "type": "matching",
-                "title": f"Match ideas about {topic}",
-                "description": "Match each English word with its meaning.",
-                "pairs": [
-                    {"left": "experience", "right": "trải nghiệm"},
-                    {"left": "respect", "right": "tôn trọng"},
-                    {"left": "collaborate", "right": "hợp tác"},
-                    {"left": "reflect", "right": "phản ánh"},
-                ],
+                "title": f"Match {subject} terms: {topic}",
+                "description": "Match each English term with its Vietnamese meaning.",
+                "pairs": pairs,
             }]
         },
         "practice": {
             "instructions": (
-                f"Work in groups of 4. Create a mini poster or 5-sentence talk about {topic}. "
-                "Use at least 5 new words. Upload a photo or a short recording of your product."
+                f"Complete a short {subject} exercise on “{topic}” (GDPT 2018 practice stage). "
+                f"Write 5–8 English sentences using at least 4 vocabulary words from the lesson."
             ),
             "allow_upload": True,
         },
         "reflection": {
             "instructions": (
-                f"Write 80–120 words in English: What did you learn about {topic}? "
-                "What will you do differently next time? Give one real example from school life."
+                f"Write 80–120 words in English: two key facts you learned about “{topic}” in {subject}, "
+                "and one way to apply them in a school task."
             ),
         },
         "quiz": {
@@ -2291,6 +2893,7 @@ def generate_eight_step_draft(
     quiz_context: dict | None = None,
     light: bool = False,
 ) -> dict:
+    teach = _teaching_content_rules(grade, subject, topic)
     brief = _teacher_brief(
         grade=grade, subject=subject, topic=topic, language="en",
         description=description, extra_requirements=extra_requirements,
@@ -2313,8 +2916,10 @@ def generate_eight_step_draft(
 
     compact_eight = f"""
 {brief}
-Compact 8-step JSON: title, warm_up 3 MCQs, 4 vocabulary, short reading + 2 questions, matching 4 pairs, 4 quiz items.
-Topic "{topic}". Complete JSON, do not truncate.
+{teach}
+Compact 8-step JSON (GDPT 2018 subject content): title, warm_up 3 MCQs on "{topic}", 4–6 subject vocabulary,
+reading 90–130 words on "{topic}" + 2 MCQs, matching 4 pairs, practice = subject exercise, quiz 4 items.
+Complete JSON, do not truncate.
 """
     if light:
         try:
@@ -2333,6 +2938,7 @@ Topic "{topic}". Complete JSON, do not truncate.
     try:
         part1 = _ask(f"""
 {brief}
+{teach}
 {hint}
 Create the FIRST HALF of an 8-step lesson. JSON only:
 {{
@@ -2342,7 +2948,7 @@ Create the FIRST HALF of an 8-step lesson. JSON only:
   "warm_up": {{"questions": [{{"question":"...","options":["A","B","C","D"],"correct_answer":"A"}}]}},
   "vocabulary": [{{"word":"...","ipa":"/.../","meaning_vi":"...","example_sentence":"..."}}],
   "reading": {{
-    "passage": "90-130 English words, Vietnam school, this topic",
+    "passage": "90-130 English words: subject knowledge of this topic (GDPT 2018), not generic experiential text",
     "translation": "Vietnamese translation",
     "questions": [{{"question":"...","options":["A","B","C","D"],"correct_answer":"A"}}]
   }},
@@ -2358,12 +2964,13 @@ Rules: warm_up 3 MCQs, vocabulary 6 words, reading 3 MCQs, 2 subtitle lines. Exa
             quiz_hint = "Write a NEW 6-item quiz on the same topic (do not copy placeholders).\n"
         part2 = _ask(f"""
 {brief}
+{teach}
 {hint}{quiz_hint}
 Create the SECOND HALF of the 8-step lesson. JSON only:
 {{
   "interactive": {{"activities": [{{"type":"matching","title":"...","description":"...","pairs":[{{"left":"EN","right":"VI"}}]}}]}},
-  "practice": {{"instructions": "English group task with a product to upload"}},
-  "reflection": {{"instructions": "English journal prompt 60-90 words"}},
+  "practice": {{"instructions": "English instructions for a {subject} exercise on '{topic}' (practice stage)"}},
+  "reflection": {{"instructions": "English writing: 2 facts learned + 1 application of '{topic}' in {subject}"}},
   "quiz": {{
     "title": "Quiz: {topic}",
     "time_limit_minutes": 20,

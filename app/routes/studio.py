@@ -67,7 +67,7 @@ def _base_payload():
     data = request.get_json() or {}
     return {
         "grade": _text(data.get("grade"), "Lớp 6") or "Lớp 6",
-        "subject": _text(data.get("subject"), "Hoạt động trải nghiệm") or "Hoạt động trải nghiệm",
+        "subject": _text(data.get("subject"), "Ngữ văn") or "Ngữ văn",
         "topic": _text(data.get("topic")),
         "description": _text(data.get("description") or data.get("mo_ta")),
         "language": _text(data.get("language"), "bilingual") or "bilingual",

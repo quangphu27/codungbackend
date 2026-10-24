@@ -234,7 +234,7 @@ def build_rich_docx_bytes(lesson: dict) -> bytes:
     section.bottom_margin = Cm(2)
 
     theme = _theme_from(lesson)
-    title_vi = lesson.get("title_vi") or lesson.get("title") or "Giáo án trải nghiệm"
+    title_vi = lesson.get("title_vi") or lesson.get("title") or "Giáo án giảng dạy"
     title_en = lesson.get("title_en") or ""
     grade = lesson.get("grade") or ""
     subject = lesson.get("subject") or ""
@@ -247,7 +247,7 @@ def build_rich_docx_bytes(lesson: dict) -> bytes:
 
     # ===== HEADER =====
     _add_para(doc, "EDUBRIDGE · TEACHING AND LEARNING SUBJECTS IN ENGLISH", size=11, bold=True, color=theme["orange"], align="center", space_after=2)
-    _add_para(doc, "GIÁO ÁN BÀI HỌC TRẢI NGHIỆM / BILINGUAL LESSON PLAN", size=13, bold=True, color=theme["navy"], align="center", space_after=4)
+    _add_para(doc, "GIÁO ÁN GIẢNG DẠY / BILINGUAL LESSON PLAN", size=13, bold=True, color=theme["navy"], align="center", space_after=4)
     _add_heading_custom(doc, title_vi, level=0, theme=theme)
     if title_en and title_en != title_vi:
         _add_para(doc, title_en, size=13, bold=True, italic=True, color=theme["teal"], align="center", space_after=10)
@@ -259,7 +259,7 @@ def build_rich_docx_bytes(lesson: dict) -> bytes:
         ("Môn / Subject", subject),
         ("Chủ đề / Topic", topic),
         ("Thời lượng / Duration", f"{duration} phút"),
-        ("Hình thức / Mode", lesson.get("mode") or "Lớp học · Hoạt động trải nghiệm"),
+        ("Hình thức / Mode", lesson.get("mode") or "Lớp học · Giảng dạy theo chủ đề"),
         ("Ngôn ngữ / Language", "Song ngữ Việt – Anh / Bilingual VI–EN"),
     ], theme=theme)
     if description:
@@ -337,12 +337,17 @@ def build_rich_docx_bytes(lesson: dict) -> bytes:
     _add_heading_custom(doc, "IV. TIẾN TRÌNH DẠY HỌC / TEACHING PROCEDURE", level=1, theme=theme)
     _add_para(
         doc,
+        "Theo GDPT 2018: Mở đầu (Khởi động) → Hình thành kiến thức mới → Luyện tập → Vận dụng.",
+        size=11, italic=True, color=GRAY, space_after=4,
+    )
+    _add_para(
+        doc,
         "Bảng tiến trình (thời gian – hoạt động – nội dung – giáo viên – học sinh).",
         size=11, italic=True, color=GRAY, space_after=6,
     )
     proc = _procedure_rows(lesson)
     if not proc:
-        proc = [["45'", "Main lesson", f"Explore {topic}", "Guide", "Practice"]]
+        proc = [["45'", "Vận dụng", f"Apply knowledge of {topic}", "Guide", "Present answers"]]
     _add_data_table(
         doc,
         ["Time", "Stage / Phần", "Content / Nội dung", "Teacher", "Students"],
