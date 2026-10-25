@@ -2,11 +2,12 @@
 from flask import Blueprint, request, jsonify, send_file
 from flask_jwt_extended import jwt_required, get_jwt_identity, get_jwt
 import io
+import os
 import re
 import unicodedata
 
 from app.extensions import get_db
-from app.middlewares.auth import teacher_required
+from app.middlewares.auth import teacher_required, admin_required
 from app.utils.helpers import serialize_doc, utc_now, to_object_id
 from app.services import studio_service
 
@@ -697,7 +698,12 @@ def publish_quiz():
     }), 201
 
 
-KIND_LABELS = {"lesson": "Giáo án", "quiz": "Đề kiểm tra", "pptx": "PowerPoint"}
+KIND_LABELS = {
+    "lesson": "Giáo án",
+    "quiz": "Đề kiểm tra",
+    "pptx": "PowerPoint",
+    "file": "Tài liệu",
+}
 
 
 def _norm_subject(name: str) -> str:
@@ -731,6 +737,7 @@ def _library_kind_counts_group(field_expr) -> dict:
         "lesson": {"$sum": {"$cond": [{"$eq": ["$kind", "lesson"]}, 1, 0]}},
         "quiz": {"$sum": {"$cond": [{"$eq": ["$kind", "quiz"]}, 1, 0]}},
         "pptx": {"$sum": {"$cond": [{"$eq": ["$kind", "pptx"]}, 1, 0]}},
+        "file": {"$sum": {"$cond": [{"$eq": ["$kind", "file"]}, 1, 0]}},
     }
 
 
@@ -762,6 +769,7 @@ def _library_grades(db, extra_query: dict | None = None):
             "lesson": int(row.get("lesson") or 0),
             "quiz": int(row.get("quiz") or 0),
             "pptx": int(row.get("pptx") or 0),
+            "file": int(row.get("file") or 0),
         })
     rows.sort(key=lambda r: _grade_sort_key(r["name"]))
     return rows
@@ -791,6 +799,7 @@ def _library_subjects(db, extra_query: dict | None = None, *, grade: str = ""):
             "lesson": int(row.get("lesson") or 0),
             "quiz": int(row.get("quiz") or 0),
             "pptx": int(row.get("pptx") or 0),
+            "file": int(row.get("file") or 0),
         })
     rows.sort(key=lambda r: r["name"].lower())
     return rows
@@ -837,6 +846,7 @@ def _library_topics(db, extra_query: dict | None = None, *, grade: str = "", sub
             "lesson": int(row.get("lesson") or 0),
             "quiz": int(row.get("quiz") or 0),
             "pptx": int(row.get("pptx") or 0),
+            "file": int(row.get("file") or 0),
         })
     rows.sort(key=lambda r: r["topic"].lower())
     return rows
@@ -848,6 +858,33 @@ def _library_title(kind: str, content: dict, topic: str) -> str:
     if kind == "quiz":
         return (content.get("title") or topic or "Quiz").strip()
     return (content.get("title") or topic or "Slides").strip()
+
+
+def _guess_mime(filename: str, fallback: str = "application/octet-stream") -> str:
+    low = (filename or "").lower()
+    if low.endswith(".pdf"):
+        return "application/pdf"
+    if low.endswith(".docx"):
+        return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    if low.endswith(".doc"):
+        return "application/msword"
+    if low.endswith(".pptx"):
+        return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    if low.endswith(".ppt"):
+        return "application/vnd.ms-powerpoint"
+    if low.endswith(".xlsx"):
+        return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    if low.endswith(".xls"):
+        return "application/vnd.ms-excel"
+    if low.endswith(".txt"):
+        return "text/plain"
+    if low.endswith(".zip"):
+        return "application/zip"
+    if low.endswith((".jpg", ".jpeg")):
+        return "image/jpeg"
+    if low.endswith(".png"):
+        return "image/png"
+    return fallback
 
 
 def _library_summary(item: dict) -> dict:
@@ -1052,6 +1089,87 @@ def publish_to_library():
     }), 201
 
 
+@studio_bp.route("/library/upload", methods=["POST"])
+@jwt_required()
+@admin_required
+def library_upload_material():
+    """Admin tải tài liệu (PDF, Word, PPT...) vào một bài học cụ thể trong Kho."""
+    db = get_db()
+    teacher_id = to_object_id(get_jwt_identity())
+    user = db.users.find_one({"_id": teacher_id}) or {}
+    teacher_name = user.get("full_name") or user.get("name") or "Admin"
+
+    grade = _norm_grade(request.form.get("grade") or "")
+    subject = _norm_subject(request.form.get("subject") or "")
+    topic = (request.form.get("topic") or "").strip()
+    title = (request.form.get("title") or "").strip()
+    description = (request.form.get("description") or "").strip()
+    upload = request.files.get("file")
+
+    if not grade or grade == "Khác":
+        return jsonify({"message": "Chọn khối lớp (grade) cho bài học"}), 400
+    if not subject or subject == "Khác":
+        return jsonify({"message": "Chọn môn học (subject) cho bài học"}), 400
+    if not topic:
+        return jsonify({"message": "Chọn bài học / chủ đề (topic) để gắn tài liệu"}), 400
+    if not upload or not upload.filename:
+        return jsonify({"message": "Chọn file tài liệu để tải lên"}), 400
+
+    try:
+        from app.services.cloudinary_service import upload_library_material
+        meta = upload_library_material(upload, "library")
+    except ValueError as exc:
+        return jsonify({"message": str(exc)}), 400
+    except Exception:
+        from flask import current_app
+        current_app.logger.exception("library upload failed")
+        return jsonify({"message": "Không tải file lên được. Thử lại sau."}), 500
+
+    filename = meta.get("filename") or upload.filename
+    file_url = meta.get("url")
+    if not file_url:
+        return jsonify({"message": "Upload thất bại"}), 500
+
+    content = {
+        "filename": filename,
+        "file_url": file_url,
+        "format": meta.get("format"),
+        "bytes": meta.get("bytes"),
+        "mime": _guess_mime(filename),
+        "public_id": meta.get("public_id"),
+        "resource_type": meta.get("resource_type") or "raw",
+        "uploaded_by_admin": True,
+    }
+    doc_title = title or filename
+    now = utc_now()
+    doc = {
+        "kind": "file",
+        "title": doc_title,
+        "filename": filename,
+        "topic": topic,
+        "grade": grade,
+        "subject": subject,
+        "description": description,
+        "language": "vi",
+        "ai_source": "upload",
+        "status": "approved",
+        "teacher_id": teacher_id,
+        "teacher_name": teacher_name,
+        "content": content,
+        "file_url": file_url,
+        "approved_by": teacher_id,
+        "approved_at": now,
+        "created_at": now,
+        "updated_at": now,
+    }
+    result = db.library_items.insert_one(doc)
+    doc["_id"] = result.inserted_id
+    return jsonify({
+        "message": "Đã tải tài liệu vào bài học",
+        "item": _library_summary(doc),
+    }), 201
+
+
 @studio_bp.route("/library/<item_id>", methods=["GET"])
 @jwt_required()
 @teacher_required
@@ -1078,6 +1196,12 @@ def library_download(item_id):
     if cached_url:
         blob = fetch_bytes(cached_url)
         if blob:
+            if kind == "file":
+                filename = content.get("filename") or item.get("title") or "tai_lieu"
+                mime = content.get("mime") or _guess_mime(filename)
+                stem, ext = os.path.splitext(filename)
+                safe = _safe_download_name(stem, "tai_lieu", ext or ".bin")
+                return send_file(io.BytesIO(blob), mimetype=mime, as_attachment=True, download_name=safe)
             if kind == "pptx":
                 mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
                 filename = _safe_download_name(item.get("title"), "slide", ".pptx")
@@ -1109,6 +1233,8 @@ def library_download(item_id):
                 return studio_service.build_pptx_bytes(content, light=True)
 
         blob = get_or_build_file("pptx", content, filename, _build_lib_pptx)
+    elif kind == "file":
+        return jsonify({"message": "Tài liệu không có bản lưu — hãy tải lên lại"}), 404
     else:
         return jsonify({"message": "Loại học liệu không hỗ trợ tải"}), 400
     return send_file(io.BytesIO(blob), mimetype=mime, as_attachment=True, download_name=filename)

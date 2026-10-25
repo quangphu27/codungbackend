@@ -13,6 +13,12 @@ ALLOWED_DOC = {
     "application/pdf",
     "application/msword",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.ms-excel",
+    "text/plain",
+    "application/zip",
 }
 
 
@@ -85,6 +91,25 @@ def upload_document(file: FileStorage, folder: str = "documents"):
     if file.content_type not in ALLOWED_DOC and file.content_type not in ALLOWED_IMAGE:
         raise ValueError("Định dạng tài liệu không được hỗ trợ")
     resource_type = "raw" if file.content_type in ALLOWED_DOC else "image"
+    return _upload(file, resource_type, folder)
+
+
+_LIBRARY_EXT = (
+    ".pdf", ".doc", ".docx", ".ppt", ".pptx", ".xls", ".xlsx",
+    ".txt", ".zip", ".jpg", ".jpeg", ".png",
+)
+
+
+def upload_library_material(file: FileStorage, folder: str = "library"):
+    """Tài liệu admin tải lên Kho học liệu (raw trên Cloudinary)."""
+    if not file or not file.filename:
+        raise ValueError("Thiếu file")
+    name = (file.filename or "").lower()
+    ok_type = file.content_type in ALLOWED_DOC or file.content_type in ALLOWED_IMAGE
+    ok_ext = any(name.endswith(ext) for ext in _LIBRARY_EXT)
+    if not ok_type and not ok_ext:
+        raise ValueError("Định dạng không hỗ trợ (PDF, Word, PowerPoint, Excel, ảnh, ZIP...)")
+    resource_type = "image" if file.content_type in ALLOWED_IMAGE or name.endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")) else "raw"
     return _upload(file, resource_type, folder)
 
 
