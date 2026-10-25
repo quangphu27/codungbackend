@@ -61,6 +61,7 @@ def _call_gemini(
     json_mode: bool = False,
     timeout: int = 30,
     max_output_tokens: int = 2048,
+    media_parts: list | None = None,
 ) -> str:
     """Gọi Gemini qua REST HTTP – không dùng SDK để tránh lỗi thư viện."""
     import json
@@ -76,7 +77,12 @@ def _call_gemini(
     if system:
         contents.append({"role": "user",  "parts": [{"text": system[:4000]}]})
         contents.append({"role": "model", "parts": [{"text": "Understood. I will follow the instructions."}]})
-    contents.append({"role": "user", "parts": [{"text": (prompt or "")[:24000]}]})
+    user_parts = []
+    for part in (media_parts or [])[:8]:
+        if isinstance(part, dict) and part.get("inline_data"):
+            user_parts.append(part)
+    user_parts.append({"text": (prompt or "")[:24000]})
+    contents.append({"role": "user", "parts": user_parts})
 
     generation_config = {
         "temperature": 0.3 if json_mode else 0.7,
@@ -286,6 +292,7 @@ def _call_ai(
     *,
     json_mode: bool = False,
     timeout: int | None = None,
+    media_parts: list | None = None,
 ) -> tuple[str, str]:
     """
     Gọi AI theo thứ tự ưu tiên.
@@ -306,19 +313,21 @@ def _call_ai(
         messages.append({"role": "user", "content": prompt})
         return messages
 
+    gemini_kwargs["media_parts"] = media_parts
     if provider == "gemini":
         text = _call_gemini(prompt, system, **gemini_kwargs)
         if text:
             return text, "gemini"
         # JSON Studio: không nối OpenAI (chậm, dễ vượt timeout server)
-        if not json_mode:
+        if not json_mode and not media_parts:
             text = _call_openai(_openai_messages(), min(int(max_tokens or 800), 2000))
             if text:
                 return text, "openai"
     else:
-        text = _call_openai(_openai_messages(), min(int(max_tokens or 800), 2000))
-        if text:
-            return text, "openai"
+        if not media_parts:
+            text = _call_openai(_openai_messages(), min(int(max_tokens or 800), 2000))
+            if text:
+                return text, "openai"
         text = _call_gemini(prompt, system, **gemini_kwargs)
         if text:
             return text, "gemini"

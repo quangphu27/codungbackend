@@ -219,7 +219,261 @@ def _procedure_rows(lesson: dict) -> list[list[str]]:
     return rows
 
 
+def _is_clil_lesson(lesson: dict) -> bool:
+    return (
+        (lesson or {}).get("lesson_format") == "edubridge_clil"
+        or isinstance((lesson or {}).get("activities"), list)
+    )
+
+
+def _build_edubridge_clil_docx_bytes(lesson: dict) -> bytes:
+    """Giáo án tiếng Anh (CLIL) + phụ lục Teacher's English Support Notes."""
+    from docx import Document
+    from docx.shared import Cm
+
+    doc = Document()
+    section = doc.sections[0]
+    section.page_width = Cm(21)
+    section.page_height = Cm(29.7)
+    section.left_margin = Cm(2.5)
+    section.right_margin = Cm(2)
+    section.top_margin = Cm(2)
+    section.bottom_margin = Cm(2)
+
+    theme = _theme_from(lesson)
+    header = lesson.get("lesson_header") if isinstance(lesson.get("lesson_header"), dict) else {}
+    title = lesson.get("title_en") or lesson.get("title_vi") or "Lesson plan"
+    grade = lesson.get("grade") or ""
+    subject = lesson.get("subject") or ""
+    topic = lesson.get("topic") or ""
+    duration = lesson.get("duration_minutes") or 45
+
+    _add_para(doc, "EDUBRIDGE · CLIL LESSON PLAN", size=11, bold=True, color=theme["orange"], align="center", space_after=2)
+    _add_para(doc, "LESSON PLAN", size=14, bold=True, color=theme["navy"], align="center", space_after=6)
+    _add_heading_custom(doc, title, level=0, theme=theme)
+
+    info_rows = [
+        ("Subject", subject),
+        ("Grade", grade),
+        ("Unit / Topic", header.get("unit_topic") or topic),
+        ("Lesson", header.get("lesson_title") or title),
+        ("Week", header.get("week") or "—"),
+        ("Period", header.get("period") or "—"),
+        ("Duration", f"{duration} minutes"),
+        ("Textbook / Source", header.get("textbook_source") or "Textbook / teacher materials"),
+        ("Teacher English level", header.get("teacher_english_level") or lesson.get("teacher_english_level") or "A2"),
+        ("Students' English level", header.get("student_english_level") or lesson.get("student_english_level") or "A2"),
+        ("Class size", header.get("class_size") or "—"),
+        ("Equipment", header.get("equipment") or "Projector, board"),
+        ("Approach", header.get("teaching_approach") or "CLIL, active learning"),
+    ]
+    _add_heading_custom(doc, "LESSON INFORMATION", level=1, theme=theme)
+    _add_info_table(doc, info_rows, theme=theme)
+
+    desc = (lesson.get("description") or "").strip()
+    if desc:
+        _add_para(doc, "Description", size=12, bold=True, color=theme["teal"], space_after=4)
+        _add_para(doc, desc, size=12, color=GRAY, align="justify", first_line=True, space_after=8)
+
+    src_notes = (lesson.get("source_notes") or "").strip()
+    if src_notes:
+        _add_para(doc, "Source / material notes", size=11, bold=True, color=theme["orange"], space_after=4)
+        _add_para(doc, src_notes, size=11, italic=True, color=GRAY, space_after=8)
+
+    obj = lesson.get("objectives") if isinstance(lesson.get("objectives"), dict) else {}
+    _add_heading_custom(doc, "I. OBJECTIVES", level=1, theme=theme)
+    _add_para(doc, "By the end of this lesson, students will be able to:", size=12, bold=True, space_after=4)
+    for label, key in (
+        ("1. Knowledge", "knowledge"),
+        ("2. Competences", "competences"),
+        ("3. Personal qualities", "personal_qualities"),
+        ("4. Digital competence", "digital_competence"),
+    ):
+        items = obj.get(key)
+        if key == "digital_competence" and not items:
+            continue
+        if isinstance(items, str):
+            items = [items]
+        if not items:
+            continue
+        _add_para(doc, label, size=11, bold=True, color=theme["navy"], space_before=6, space_after=2)
+        for it in items:
+            _add_bullet(doc, f" {it}")
+
+    _add_heading_custom(doc, "II. MATERIALS", level=1, theme=theme)
+    mats = lesson.get("materials")
+    if isinstance(mats, dict):
+        for label, key in (
+            ("Textbook / Learning materials", "textbook"),
+            ("Equipment", "equipment"),
+            ("Worksheets", "worksheets"),
+            ("Digital resources", "digital"),
+            ("Other", "other"),
+        ):
+            items = mats.get(key) or []
+            if items:
+                _add_para(doc, label, size=11, bold=True, color=theme["teal"], space_after=2)
+                for m in items:
+                    _add_bullet(doc, f" {m}")
+    elif isinstance(mats, list):
+        for m in mats:
+            _add_bullet(doc, f" {m}")
+
+    analysis = (lesson.get("subject_language_analysis") or lesson.get("core_content_en") or "").strip()
+    if analysis:
+        _add_para(doc, "Subject content / Language analysis", size=12, bold=True, color=theme["teal"], space_before=8, space_after=4)
+        _add_para(doc, analysis, size=12, color=GRAY, align="justify", first_line=True, space_after=8)
+
+    vocab = lesson.get("vocabulary") or []
+    if vocab:
+        rows = []
+        for v in vocab:
+            if not isinstance(v, dict):
+                continue
+            rows.append([
+                v.get("term") or "",
+                v.get("ipa") or "",
+                v.get("meaning_vi") or v.get("meaning") or "",
+                v.get("explanation_en") or "",
+                v.get("example") or "",
+            ])
+        _add_para(doc, "Key vocabulary", size=12, bold=True, color=theme["teal"], space_before=6, space_after=4)
+        _add_data_table(
+            doc,
+            ["English term", "IPA", "Vietnamese", "Simple English explanation", "Example"],
+            rows,
+            theme=theme,
+        )
+
+    diffs = lesson.get("anticipated_difficulties") or []
+    if diffs:
+        rows = []
+        for d in diffs:
+            if isinstance(d, dict):
+                rows.append([d.get("difficulty") or "", d.get("solution") or ""])
+        if rows:
+            _add_para(doc, "Assumptions / Anticipated difficulties", size=12, bold=True, color=theme["teal"], space_before=8, space_after=4)
+            _add_data_table(doc, ["Anticipated difficulties", "Suggested solutions"], rows, theme=theme)
+
+    _add_heading_custom(doc, "III. PROCEDURES", level=1, theme=theme)
+    activities = lesson.get("activities") or []
+    if not activities:
+        activities = [
+            {**s, "name": s.get("heading_en") or s.get("heading_vi")}
+            for s in (lesson.get("sections") or [])
+            if isinstance(s, dict)
+        ]
+    for idx, act in enumerate(activities, 1):
+        if not isinstance(act, dict):
+            continue
+        name = act.get("name") or f"Activity {idx}"
+        _add_heading_custom(doc, f"{idx}. {name}", level=2, theme=theme)
+        if act.get("duration"):
+            _add_para(doc, f"Duration: {act['duration']}", size=11, italic=True, color=theme["orange"], space_after=4)
+        for label, key in (
+            ("a. Objectives", "objectives"),
+            ("b. Content", "content"),
+            ("c. Expected outcomes", "expected_outcomes"),
+        ):
+            val = (act.get(key) or "").strip()
+            if val:
+                _add_para(doc, label, size=11, bold=True, color=theme["navy"], space_after=2)
+                _add_para(doc, val, size=12, color=GRAY, align="justify", first_line=True, space_after=4)
+        org = act.get("organisation") or []
+        if org:
+            _add_para(doc, "d. Organisation", size=11, bold=True, color=theme["navy"], space_after=4)
+            rows = []
+            for row in org:
+                if isinstance(row, dict):
+                    rows.append([
+                        row.get("teacher_en") or "",
+                        row.get("student_en") or "",
+                        row.get("contents") or "",
+                    ])
+            if rows:
+                _add_data_table(
+                    doc,
+                    ["TEACHER'S ACTIVITIES", "STUDENTS' ACTIVITIES", "CONTENTS"],
+                    rows,
+                    theme=theme,
+                )
+        if act.get("assessment") or act.get("activity_assessment"):
+            _add_para(doc, "e. Assessment", size=11, bold=True, color=theme["navy"], space_after=2)
+            _add_para(doc, act.get("assessment") or act.get("activity_assessment"), size=12, color=GRAY, space_after=6)
+
+    exercises = lesson.get("exercises") or []
+    if exercises:
+        _add_heading_custom(doc, "IV. EXERCISES & ASSESSMENT", level=1, theme=theme)
+        for ex in exercises:
+            if not isinstance(ex, dict):
+                continue
+            if ex.get("instructions_en"):
+                _add_para(doc, ex["instructions_en"], size=12, bold=True, color=theme["teal"], space_after=4)
+            for t in ex.get("tasks") or []:
+                _add_bullet(doc, f" {t}")
+            if ex.get("answer_key"):
+                _add_para(doc, f"Answer key: {ex['answer_key']}", size=11, italic=True, color=GRAY, space_after=4)
+
+    notes = lesson.get("english_support_notes")
+    if isinstance(notes, dict):
+        doc.add_page_break()
+        _add_heading_custom(doc, "TEACHER'S ENGLISH SUPPORT NOTES", level=1, theme=theme)
+        _add_para(
+            doc,
+            "Appendix for teacher preparation — not part of the formal lesson plan table.",
+            size=10, italic=True, color=GRAY, space_after=8,
+        )
+        expr = notes.get("essential_expressions") or []
+        if expr:
+            _add_para(doc, "A. Essential teaching expressions", size=12, bold=True, color=theme["teal"], space_after=4)
+            rows = [[e.get("en") or "", e.get("vi") or ""] for e in expr if isinstance(e, dict)]
+            if rows:
+                _add_data_table(doc, ["English", "Vietnamese"], rows, theme=theme)
+        terms = notes.get("difficult_terminology") or []
+        if terms:
+            _add_para(doc, "B. Difficult subject terminology", size=12, bold=True, color=theme["teal"], space_before=8, space_after=4)
+            rows = [[t.get("term") or "", t.get("ipa") or "", t.get("vi") or ""] for t in terms if isinstance(t, dict)]
+            if rows:
+                _add_data_table(doc, ["Term", "IPA", "Vietnamese"], rows, theme=theme)
+        pron = notes.get("pronunciation_support") or []
+        if pron:
+            _add_para(doc, "C. Pronunciation support", size=12, bold=True, color=theme["teal"], space_before=8, space_after=4)
+            for p in pron:
+                if isinstance(p, dict):
+                    _add_bullet(doc, f" {p.get('phrase') or ''} {p.get('ipa') or ''} — {p.get('note') or ''}")
+        simple = notes.get("simplified_explanations") or []
+        if simple:
+            _add_para(doc, "D. Simplified explanations", size=12, bold=True, color=theme["teal"], space_before=8, space_after=4)
+            for s in simple:
+                if isinstance(s, dict):
+                    _add_para(doc, s.get("concept") or "", size=11, bold=True, space_after=2)
+                    if s.get("standard_en"):
+                        _add_para(doc, f"Standard: {s['standard_en']}", size=11, color=GRAY, space_after=2)
+                    if s.get("simple_en"):
+                        _add_para(doc, f"Simple: {s['simple_en']}", size=11, color=GRAY, space_after=2)
+                    if s.get("vietnamese_support"):
+                        _add_para(doc, f"Vietnamese (for teacher): {s['vietnamese_support']}", size=11, italic=True, color=GRAY, space_after=4)
+        sit = notes.get("classroom_situations") or []
+        if sit:
+            _add_para(doc, "E. Classroom situations", size=12, bold=True, color=theme["teal"], space_before=8, space_after=4)
+            rows = [[s.get("situation") or "", s.get("english_response") or ""] for s in sit if isinstance(s, dict)]
+            if rows:
+                _add_data_table(doc, ["Situation", "Suggested English response"], rows, theme=theme)
+
+    _add_para(doc, "", space_after=8)
+    _add_para(
+        doc,
+        "— EduBridge · Teacher Studio · CLIL lesson plan —",
+        size=9, italic=True, color=theme["orange"], align="center", space_before=12,
+    )
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
 def build_rich_docx_bytes(lesson: dict) -> bytes:
+    if _is_clil_lesson(lesson):
+        return _build_edubridge_clil_docx_bytes(lesson)
     from docx import Document
     from docx.enum.section import WD_ORIENT
     from docx.shared import Cm, Pt
@@ -588,6 +842,181 @@ def build_quiz_docx_bytes(quiz: dict) -> bytes:
         size=9, italic=True, color=theme["orange"], align="center", space_before=12,
     )
 
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def _worksheet_theme(data: dict):
+    return _theme_from(data)
+
+
+def _add_response_space(doc, task: dict, theme) -> None:
+    rtype = (task.get("response_type") or "lines").lower()
+    lines = int(task.get("response_lines") or 4)
+    if rtype == "draw_box":
+        _add_para(doc, "[ Draw here ]", size=11, italic=True, color=GRAY, space_after=4)
+        for _ in range(6):
+            _add_para(doc, "________________________________________________________", size=11, color=GRAY)
+        return
+    if rtype == "table" and isinstance(task.get("table_template"), dict):
+        tbl = task["table_template"]
+        headers = [str(h) for h in (tbl.get("headers") or ["", ""])]
+        rows = tbl.get("rows") or [["", ""]]
+        body = [[str(c) for c in row] for row in rows if isinstance(row, list)]
+        _add_data_table(doc, headers, body, theme=theme)
+        return
+    if rtype == "mcq":
+        for item in task.get("items") or []:
+            _add_para(doc, str(item), size=12, color=GRAY, space_after=2)
+            _add_para(doc, "☐ A    ☐ B    ☐ C    ☐ D", size=11, color=GRAY, space_after=6)
+        return
+    if rtype == "blanks":
+        for item in task.get("items") or []:
+            _add_para(doc, str(item).replace("___", "________________"), size=12, color=GRAY, space_after=6)
+        return
+    for item in task.get("items") or []:
+        _add_para(doc, f"• {item}", size=12, color=GRAY, space_after=4)
+    for _ in range(max(2, min(lines, 12))):
+        _add_para(doc, "______________________________________________________________", size=11, color=GRAY)
+
+
+def build_worksheet_student_docx_bytes(worksheet: dict) -> bytes:
+    """Phiếu học tập — bản học sinh (không đáp án)."""
+    from docx import Document
+    from docx.shared import Cm
+
+    doc = Document()
+    section = doc.sections[0]
+    section.page_width = Cm(21)
+    section.page_height = Cm(29.7)
+    section.left_margin = Cm(2.2)
+    section.right_margin = Cm(2)
+    section.top_margin = Cm(2)
+    section.bottom_margin = Cm(2)
+
+    theme = _worksheet_theme(worksheet)
+    st = worksheet.get("student") if isinstance(worksheet.get("student"), dict) else worksheet
+    grade = worksheet.get("grade") or ""
+    subject = worksheet.get("subject") or ""
+    topic = worksheet.get("topic") or ""
+
+    _add_para(doc, "EDUBRIDGE · STUDENT WORKSHEET", size=11, bold=True, color=theme["orange"], align="center", space_after=2)
+    _add_heading_custom(doc, st.get("title") or f"Worksheet: {topic}", level=0, theme=theme)
+    _add_info_table(doc, [
+        ("Subject", subject),
+        ("Grade", grade),
+        ("Lesson / Topic", topic),
+        ("Time", f"{worksheet.get('duration_minutes') or 15} minutes"),
+    ], theme=theme)
+    if st.get("header_fields"):
+        _add_para(doc, "Name: _________________________    Class: _________________________    Date: ___________", size=11, color=GRAY, space_after=8)
+
+    if st.get("learning_goal"):
+        _add_para(doc, "Learning goal", size=12, bold=True, color=theme["teal"], space_after=4)
+        _add_para(doc, st["learning_goal"], size=12, color=GRAY, align="justify", first_line=True, space_after=8)
+
+    kws = st.get("key_words") or []
+    if kws:
+        rows = []
+        for k in kws:
+            if isinstance(k, dict):
+                rows.append([k.get("term") or "", k.get("meaning_vi") or "", k.get("explanation_en") or ""])
+        if rows:
+            _add_para(doc, "Key words / Language support", size=12, bold=True, color=theme["teal"], space_after=4)
+            _add_data_table(doc, ["English term", "Vietnamese", "Simple explanation"], rows, theme=theme)
+
+    _add_heading_custom(doc, "Learning tasks", level=1, theme=theme)
+    for task in st.get("tasks") or []:
+        if not isinstance(task, dict):
+            continue
+        num = task.get("number") or ""
+        title = task.get("title") or "Task"
+        _add_heading_custom(doc, f"{num}. {title}".strip(), level=2, theme=theme)
+        if task.get("instructions"):
+            _add_para(doc, task["instructions"], size=12, bold=True, color=theme["navy"], space_after=4)
+        if task.get("learning_material"):
+            _add_para(doc, task["learning_material"], size=12, color=GRAY, align="justify", first_line=True, space_after=6)
+        if task.get("time_minutes"):
+            _add_para(doc, f"Time: about {task['time_minutes']} min", size=10, italic=True, color=theme["orange"], space_after=4)
+        _add_response_space(doc, task, theme)
+        _add_para(doc, "", space_after=6)
+
+    refl = st.get("reflection") or []
+    if refl:
+        _add_heading_custom(doc, "Reflection", level=2, theme=theme)
+        for r in refl:
+            _add_bullet(doc, f" {r}")
+            _add_para(doc, "______________________________________________", size=11, color=GRAY, space_after=4)
+
+    if st.get("exit_question"):
+        _add_heading_custom(doc, "Exit question", level=2, theme=theme)
+        _add_para(doc, st["exit_question"], size=12, color=GRAY, space_after=4)
+        _add_para(doc, "______________________________________________________________", size=11, color=GRAY)
+
+    _add_para(doc, "— EduBridge · Student worksheet —", size=9, italic=True, color=theme["orange"], align="center", space_before=12)
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def build_worksheet_teacher_docx_bytes(worksheet: dict) -> bytes:
+    from docx import Document
+    from docx.shared import Cm
+
+    doc = Document()
+    section = doc.sections[0]
+    section.page_width = Cm(21)
+    section.page_height = Cm(29.7)
+    section.left_margin = Cm(2.2)
+    section.right_margin = Cm(2)
+    theme = _worksheet_theme(worksheet)
+    tg = worksheet.get("teacher_guide") if isinstance(worksheet.get("teacher_guide"), dict) else {}
+    st = worksheet.get("student") if isinstance(worksheet.get("student"), dict) else {}
+    topic = worksheet.get("topic") or ""
+
+    _add_para(doc, "EDUBRIDGE · TEACHER'S GUIDE & ANSWER KEY", size=11, bold=True, color=theme["orange"], align="center", space_after=4)
+    _add_heading_custom(doc, st.get("title") or f"Worksheet: {topic}", level=0, theme=theme)
+
+    for label, key in (
+        ("Objectives", "objectives"),
+        ("Common mistakes", "common_mistakes"),
+        ("Suggested feedback", "suggested_feedback"),
+        ("Assessment criteria", "assessment_criteria"),
+    ):
+        items = tg.get(key)
+        if isinstance(items, list) and items:
+            _add_para(doc, label, size=12, bold=True, color=theme["teal"], space_before=6, space_after=4)
+            for it in items:
+                _add_bullet(doc, f" {it}")
+
+    _add_para(doc, "Organisation & timing", size=12, bold=True, color=theme["teal"], space_before=8, space_after=4)
+    _add_para(doc, f"Duration: {tg.get('suggested_duration') or worksheet.get('duration_minutes') or '—'}", size=11, color=GRAY)
+    _add_para(doc, f"Mode: {tg.get('organisation') or '—'}", size=11, color=GRAY, space_after=6)
+
+    if tg.get("teacher_says_en"):
+        _add_para(doc, "Teacher says (English)", size=12, bold=True, color=theme["navy"], space_after=4)
+        _add_para(doc, tg["teacher_says_en"], size=12, color=GRAY, align="justify", first_line=True, space_after=6)
+    if tg.get("vietnamese_support"):
+        _add_para(doc, "Hỗ trợ GV (Tiếng Việt)", size=12, bold=True, color=theme["navy"], space_after=4)
+        _add_para(doc, tg["vietnamese_support"], size=12, color=GRAY, align="justify", first_line=True, space_after=8)
+
+    keys = tg.get("answer_key") or []
+    if keys:
+        rows = []
+        for k in keys:
+            if isinstance(k, dict):
+                rows.append([str(k.get("task") or ""), str(k.get("expected") or k.get("answer") or "")])
+            else:
+                rows.append(["", str(k)])
+        _add_heading_custom(doc, "Answer key / Expected responses", level=1, theme=theme)
+        _add_data_table(doc, ["Task", "Expected"], rows, theme=theme)
+
+    if tg.get("transition"):
+        _add_para(doc, "Transition", size=12, bold=True, color=theme["teal"], space_before=8, space_after=4)
+        _add_para(doc, tg["transition"], size=12, color=GRAY, space_after=8)
+
+    _add_para(doc, "— EduBridge · For teachers only —", size=9, italic=True, color=theme["orange"], align="center", space_before=12)
     buf = io.BytesIO()
     doc.save(buf)
     return buf.getvalue()

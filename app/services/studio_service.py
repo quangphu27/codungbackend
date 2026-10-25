@@ -13,6 +13,7 @@ from typing import Any
 from flask import current_app
 
 from app.services.ai_service import _call_ai
+from app.utils.gdpt_curriculum import STUDIO_GDPT_SUBJECTS
 
 
 class StudioGenerateError(Exception):
@@ -207,14 +208,6 @@ def _normalize_gdpt_sections(sections: list | None) -> list[dict]:
     return out
 
 
-# Danh mục môn Teacher Studio — mỗi môn có gợi ý chuẩn GDPT 2018 (dùng cho AI + fallback).
-STUDIO_GDPT_SUBJECTS = (
-    "Ngữ văn", "Tiếng Anh", "Toán", "Lịch sử", "Địa lý", "Giáo dục công dân",
-    "Vật lý", "Hóa học", "Sinh học", "Khoa học tự nhiên", "Công nghệ", "Tin học",
-    "Giáo dục thể chất", "Mĩ thuật", "Âm nhạc", "Hoạt động trải nghiệm",
-)
-
-
 def _subject_profile_key(subject: str, topic: str = "") -> str:
     b = _fold_text(subject or "")
     if _is_experiential_subject(subject):
@@ -229,10 +222,14 @@ def _subject_profile_key(subject: str, topic: str = "") -> str:
         return "english"
     if "lich su" in b or "history" in b:
         return "history"
-    if "dia ly" in b or "geography" in b:
+    if "dia ly" in b or "dia li" in b or "geography" in b:
         return "geography"
+    if any(k in b for k in ("kinh te", "phap luat")):
+        return "civic"
     if any(k in b for k in ("cong dan", "gdcd", "civic")):
         return "civic"
+    if "nghe thuat" in b:
+        return "art"
     if "vat ly" in b or "physics" in b:
         return "physics"
     if "hoa hoc" in b or "chemistry" in b:
@@ -408,6 +405,18 @@ def _subject_gdpt_materials(profile: str, subject: str) -> list[str]:
 
 def _enforce_gdpt_lesson_quality(out: dict, fb: dict, grade: str, subject: str, topic: str) -> dict:
     """Sau AI: luôn đúng 4 hoạt động, đúng môn, không slogan lạ."""
+    if out.get("lesson_format") == "edubridge_clil" or (
+        isinstance(out.get("activities"), list) and len(out.get("activities") or []) >= 3
+    ):
+        from app.services.studio_lesson_clil import normalize_edubridge_clil_lesson
+        out = normalize_edubridge_clil_lesson(out, fb)
+        profile = _subject_profile_key(subject, topic)
+        if not out.get("materials"):
+            out["materials"] = _subject_gdpt_materials(profile, subject)
+        out["subject"] = subject
+        out["topic"] = topic
+        out["grade"] = grade
+        return out
     profile = _subject_profile_key(subject, topic)
     out["sections"] = _normalize_gdpt_sections(out.get("sections"))
     blob = " ".join([
@@ -756,22 +765,29 @@ def _ask_studio_json(
     max_tokens: int = 4096,
     timeout: int = 40,
     compact_prompt: str | None = None,
+    book_reference: dict | None = None,
 ) -> tuple[dict | None, str | None]:
     """Gọi AI lấy JSON. Nếu lỗi/rỗng thì gọi lại bản gọn hơn."""
+    from app.services.studio_reference import book_reference_prompt_block
+
+    ref_block, media_parts = book_reference_prompt_block(book_reference)
+    prompt_use = (prompt or "") + ref_block
+    compact_use = ((compact_prompt or "") + ref_block) if compact_prompt else None
     data = None
     source = None
     try:
         text, source = _call_ai(
-            prompt, system, max_tokens=max_tokens, json_mode=True, timeout=timeout,
+            prompt_use, system, max_tokens=max_tokens, json_mode=True, timeout=timeout,
+            media_parts=media_parts or None,
         )
         data = _parse_json(text) if text else None
         if data:
             return data, source or "gemini"
     except Exception:
         current_app.logger.exception("studio AI call failed")
-    retry = compact_prompt or (
+    retry = compact_use or compact_prompt or (
         "Return COMPLETE valid JSON only. Keep every text field short (2-5 sentences). Do not truncate.\n\n"
-        + (prompt if len(prompt) < 6000 else prompt[-5500:])
+        + (prompt_use if len(prompt_use) < 6000 else prompt_use[-5500:])
     )
     try:
         text, source = _call_ai(
@@ -779,6 +795,7 @@ def _ask_studio_json(
             max_tokens=min(int(max_tokens), 3072),
             json_mode=True,
             timeout=min(int(timeout), 35),
+            media_parts=media_parts or None,
         )
         data = _parse_json(text) if text else None
         if data:
@@ -2147,12 +2164,33 @@ def generate_lesson_draft(
     theme_color: str = "#0F2744",
     theme_accent: str = "#F39C4A",
     light: bool = False,
+    book_reference: dict | None = None,
+    teacher_english_level: str = "A2",
+    student_english_level: str = "A2",
+    class_size: str = "",
+    equipment: str = "",
+    duration_minutes: int = 45,
 ) -> dict:
-    language = "bilingual"
+    from app.services.studio_lesson_clil import (
+        SYSTEM_LESSON_CLIL,
+        lesson_clil_compact_prompt,
+        lesson_clil_user_prompt,
+    )
+
+    language = "en"
+    duration_minutes = max(35, min(int(duration_minutes or 45), 90))
+    level_lines = (
+        f"- Trình độ tiếng Anh GV (giả định nếu chưa xác nhận): {teacher_english_level}\n"
+        f"- Trình độ tiếng Anh HS: {student_english_level}\n"
+        f"- Sĩ số: {class_size.strip() or '(chưa nhập — AI giả định ~35)'}\n"
+        f"- Thiết bị: {equipment.strip() or '(máy chiếu, bảng, SGK)'}\n"
+        f"- Thời lượng tiết: {duration_minutes} phút\n"
+    )
     brief = _teacher_brief(
         grade=grade, subject=subject, topic=topic, language=language,
         description=description, extra_requirements=extra_requirements,
         theme_color=theme_color, theme_accent=theme_accent,
+        extra_lines=level_lines,
     )
 
     def _finish(data: dict | None, source: str | None) -> dict:
@@ -2167,8 +2205,10 @@ def generate_lesson_draft(
         out["subject"] = subject
         out["topic"] = topic
         out["description"] = out.get("description") or description
-        out["duration_minutes"] = _as_int(out.get("duration_minutes"), 45)
+        out["duration_minutes"] = _as_int(out.get("duration_minutes"), duration_minutes)
         out["language"] = language
+        out["teacher_english_level"] = teacher_english_level
+        out["student_english_level"] = student_english_level
         out["theme_color"] = theme_color
         out["theme_accent"] = theme_accent
         out = _enforce_gdpt_lesson_quality(out, fb, grade, subject, topic)
@@ -2177,54 +2217,39 @@ def generate_lesson_draft(
 
     teach = _teaching_content_rules(grade, subject, topic)
     profile = _subject_profile_key(subject, topic)
-    prompt = f"""
-{brief}
-{teach}
-BẮT BUỘC: Tìm hiểu đúng chương trình GDPT 2018 môn {subject} ({grade}) về “{topic}” trước khi viết.
-Sai môn, sai thuật ngữ, sai kiến thức chuyên môn là KHÔNG CHẤP NHẬN. Loại môn: {profile}.
-Soạn giáo án GIẢNG DẠY SONG NGỮ đúng môn {subject} và đúng CHỦ ĐỀ “{topic}”. JSON đầy đủ một lần (không cắt):
-{{
-  "title_vi": "...", "title_en": "...",
-  "description": "2-3 câu: dạy kiến thức gì của chủ đề này",
-  "duration_minutes": 45,
-  "materials": ["đồ dùng 1", "đồ dùng 2", "đồ dùng 3", "đồ dùng 4"],
-  "objectives_vi": ["mục tiêu kiến thức 1", "mục tiêu kiến thức 2", "mục tiêu kiến thức 3"],
-  "objectives_en": ["knowledge objective 1", "knowledge objective 2", "knowledge objective 3"],
-  "core_content_vi": "60-90 chữ: kiến thức then chốt của “{topic}” (tên, sự kiện, công thức, nhân vật…)",
-  "core_content_en": "English equivalent, 60-90 words, same facts",
-  "sections": [
-    {{"heading_vi":"Mở đầu (Khởi động)","heading_en":"Opening (Warm-up)","duration":"5'","content_vi":"3-5 câu kết nối kiến thức, đặt vấn đề","content_en":"3-5 sentences","teacher_activity":"...","student_activity":"...","procedure_steps":["Bước 1","Bước 2"]}},
-    {{"heading_vi":"Hình thành kiến thức mới","heading_en":"Knowledge formation","duration":"15'","content_vi":"3-5 câu giảng đúng “{topic}”","content_en":"...","teacher_activity":"...","student_activity":"...","procedure_steps":["Bước 1","Bước 2"]}},
-    {{"heading_vi":"Luyện tập","heading_en":"Practice","duration":"15'","content_vi":"3-5 câu bài tập sát “{topic}”","content_en":"...","teacher_activity":"...","student_activity":"...","procedure_steps":["Bước 1","Bước 2"]}},
-    {{"heading_vi":"Vận dụng","heading_en":"Application","duration":"10'","content_vi":"3-5 câu vận dụng kiến thức vào tình huống/bài tập","content_en":"...","teacher_activity":"...","student_activity":"...","procedure_steps":["Bước 1","Bước 2"]}}
-  ],
-  "vocabulary": [{{"term":"thuật ngữ môn học","meaning_vi":"...","example":"câu có kiến thức “{topic}”"}}],
-  "homework": ["bài tập đúng chủ đề 1", "bài tập đúng chủ đề 2"]
-}}
-Lớp {grade}, môn {subject}, CHỦ ĐỀ “{topic}”. ĐÚNG 4 hoạt động GDPT 2018, 5 từ vựng môn học. Mỗi content 3-5 câu kiến thức. JSON hoàn chỉnh.
-"""
-    compact = f"""
-{brief}
-{teach}
-JSON giáo án GDPT 2018 song ngữ, đúng 4 hoạt động, không cắt:
-{{"title_vi":"...","title_en":"...","objectives_vi":["..."],"objectives_en":["..."],"core_content_vi":"...","core_content_en":"...","sections":[{{"heading_vi":"Mở đầu (Khởi động)","heading_en":"Opening (Warm-up)","duration":"5'","content_vi":"...","content_en":"...","teacher_activity":"...","student_activity":"..."}},{{"heading_vi":"Hình thành kiến thức mới","heading_en":"Knowledge formation","duration":"15'","content_vi":"...","content_en":"...","teacher_activity":"...","student_activity":"..."}},{{"heading_vi":"Luyện tập","heading_en":"Practice","duration":"15'","content_vi":"...","content_en":"...","teacher_activity":"...","student_activity":"..."}},{{"heading_vi":"Vận dụng","heading_en":"Application","duration":"10'","content_vi":"...","content_en":"...","teacher_activity":"...","student_activity":"..."}}],"vocabulary":[{{"term":"...","meaning_vi":"...","example":"..."}}],"homework":["..."]}}
-Môn {subject}. CHỦ ĐỀ “{topic}”. Thuật ngữ và nội dung đúng môn GDPT 2018.
-"""
+    prompt = lesson_clil_user_prompt(
+        brief=brief,
+        teach=teach,
+        subject=subject,
+        grade=grade,
+        topic=topic,
+        profile=profile,
+        teacher_english_level=teacher_english_level,
+        student_english_level=student_english_level,
+        class_size=class_size,
+        equipment=equipment,
+        duration_minutes=duration_minutes,
+        has_book_reference=bool(book_reference),
+    )
+    compact = lesson_clil_compact_prompt(subject, topic, grade, duration_minutes)
     try:
         if light:
             data, source = _ask_studio_json(
-                compact, SYSTEM_LESSON, max_tokens=2048, timeout=30, compact_prompt=compact,
+                compact, SYSTEM_LESSON_CLIL, max_tokens=3072, timeout=45, compact_prompt=compact,
+                book_reference=book_reference,
             )
         else:
             data, source = _ask_studio_json(
-                prompt, SYSTEM_LESSON, max_tokens=4096, timeout=40, compact_prompt=compact,
+                prompt, SYSTEM_LESSON_CLIL, max_tokens=8192, timeout=90, compact_prompt=compact,
+                book_reference=book_reference,
             )
         return _finish(data, source)
     except Exception:
         current_app.logger.exception("generate_lesson_draft failed")
         try:
             data, source = _ask_studio_json(
-                compact, SYSTEM_LESSON, max_tokens=2048, timeout=25, compact_prompt=compact,
+                compact, SYSTEM_LESSON_CLIL, max_tokens=4096, timeout=60, compact_prompt=compact,
+                book_reference=book_reference,
             )
             return _finish(data, source)
         except Exception:
@@ -2255,6 +2280,7 @@ def generate_quiz_draft(
     theme_color: str = "#0F2744",
     theme_accent: str = "#F39C4A",
     light: bool = False,
+    book_reference: dict | None = None,
 ) -> dict:
     language = "en"
     num_questions = max(3, min(int(num_questions or 10), 20))
@@ -2361,8 +2387,9 @@ Return JSON only.
             compact_quiz if light else prompt,
             system,
             max_tokens=2048 if light else 4096,
-            timeout=30 if light else 40,
+            timeout=30 if light else 45,
             compact_prompt=compact_quiz,
+            book_reference=book_reference,
         )
         raw = (data or {}).get("questions") if data else []
         questions = _complete_quiz_questions(
@@ -2438,7 +2465,9 @@ def _normalize_pptx_slides(slides: list, topic: str, language: str = "vi") -> li
             title = title.split(" / ")[0].strip()
         title = title[:110]
 
-        normalized.append({
+        from app.services.studio_pptx_clil import format_speaker_notes_for_pptx
+
+        row = {
             "layout": layout,
             "title": title,
             "subtitle": str(s.get("subtitle") or "")[:120],
@@ -2450,8 +2479,14 @@ def _normalize_pptx_slides(slides: list, topic: str, language: str = "vi") -> li
             "table": table,
             "image_keyword": str(s.get("image_keyword") or topic)[:80],
             "image_scene": str(s.get("image_scene") or "")[:220],
-            "notes": str(s.get("notes") or s.get("notes_vi") or ""),
-        })
+            "slide_type": str(s.get("slide_type") or "")[:40],
+            "learning_purpose": str(s.get("learning_purpose") or "")[:200],
+            "student_action": str(s.get("student_action") or "")[:200],
+            "visual_element": str(s.get("visual_element") or "")[:200],
+            "speaker_notes": s.get("speaker_notes") if isinstance(s.get("speaker_notes"), dict) else None,
+        }
+        row["notes"] = format_speaker_notes_for_pptx({**s, **row})[:8000]
+        normalized.append(row)
     return normalized
 
 
@@ -2589,68 +2624,38 @@ def generate_pptx_draft(
     theme_color: str = "#0F2744",
     theme_accent: str = "#F39C4A",
     light: bool = False,
+    book_reference: dict | None = None,
+    teacher_english_level: str = "A2",
+    student_english_level: str = "A2",
+    duration_minutes: int = 45,
+    presentation_language: str = "english",
+    pptx_detail: str = "balanced",
 ) -> dict:
+    from app.services.studio_pptx_clil import (
+        SYSTEM_PPTX_CLIL,
+        pptx_clil_compact_prompt,
+        pptx_clil_user_prompt,
+    )
+
     language = "en"
     slide_count = max(6, min(int(slide_count or 10), 20))
-    context_hint = ""
-    follow_lesson = ""
-    if lesson_context:
-        sections_brief = []
-        for s in (lesson_context.get("sections") or [])[:8]:
-            sections_brief.append({
-                "heading": s.get("heading_en") or s.get("heading_vi"),
-                "duration": s.get("duration"),
-                "content": ((s.get("content_en") or s.get("content_vi") or "")[:420]),
-                "teacher": s.get("teacher_activity"),
-                "student": s.get("student_activity"),
-            })
-        brief = {
-            "title": lesson_context.get("title_en") or lesson_context.get("title_vi"),
-            "description": (lesson_context.get("description") or "")[:400],
-            "core_content": (lesson_context.get("core_content_en") or lesson_context.get("core_content_vi") or "")[:500],
-            "objectives": (lesson_context.get("objectives_en") or lesson_context.get("objectives_vi") or [])[:6],
-            "materials": (lesson_context.get("materials") or [])[:8],
-            "sections": sections_brief,
-            "vocabulary": [
-                {"term": v.get("term"), "meaning": v.get("meaning_vi")}
-                for v in (lesson_context.get("vocabulary") or [])[:8]
-            ],
-            "assessment": lesson_context.get("assessment"),
-            "homework": lesson_context.get("homework"),
-        }
-        context_hint = (
-            "CRITICAL: Build the PowerPoint STRICTLY from this lesson plan / report. "
-            "Keep the same teaching flow and ideas (do not invent a different lesson):\n"
-            + json.dumps(brief, ensure_ascii=False)[:4500]
-        )
-        follow_lesson = (
-            "- Map slides to GDPT 2018 lesson flow: Mở đầu → Hình thành kiến thức mới → Luyện tập → Vận dụng.\n"
-            "- Include one slide for knowledge objectives and one vocabulary/table slide from the lesson.\n"
-            "- Reuse key facts (names, events, formulas) from section content; keep the requested language.\n"
-            "- Match the subject’s terminology; do not replace with generic experiential slogans.\n"
-        )
-
+    duration_minutes = max(35, min(int(duration_minutes or 45), 90))
+    profile = _subject_profile_key(subject, topic)
+    level_lines = (
+        f"- Trình độ tiếng Anh GV: {teacher_english_level}\n"
+        f"- Trình độ tiếng Anh HS: {student_english_level}\n"
+        f"- Thời lượng tiết: {duration_minutes} phút\n"
+        f"- Ngôn ngữ trình chiếu: {presentation_language}\n"
+        f"- Mức chi tiết slide: {pptx_detail}\n"
+    )
     brief_txt = _teacher_brief(
         grade=grade, subject=subject, topic=topic, language=language,
         description=description, extra_requirements=extra_requirements,
         theme_color=theme_color, theme_accent=theme_accent,
-    )
-    lang_rule = (
-        "SLIDE TEXT IN ENGLISH ONLY (title, subtitle, bullets, table, cards, closing). "
-        "Presenter notes (field notes) MUST be Vietnamese for the teacher: cách giảng slide này, câu hỏi hỏi HS, thời gian gợi ý. "
-        "image_keyword and image_scene in English."
+        extra_lines=level_lines,
     )
     teach = _teaching_content_rules(grade, subject, topic)
-    system_en = (
-        "You are a subject teacher designing classroom PowerPoint decks to TEACH "
-        "the exact school subject and topic (GDPT 2018), not generic experiential activities. "
-        "Every title and bullet must be knowledge of that topic. "
-        "On-slide text is English. Teacher presenter notes are Vietnamese. "
-        "When a lesson plan is provided, the slides MUST follow that plan closely. "
-        "Prefer Vietnamese school / Vietnam imagery matching THIS topic. "
-        "image_keyword and image_scene must describe the EXACT photo of THAT slide, Vietnam-first. "
-        "Return valid JSON only."
-    )
+    system_en = SYSTEM_PPTX_CLIL
 
     def _pack(deck: dict, source: str | None, slides: list) -> dict:
         deck["slides"] = slides
@@ -2660,77 +2665,39 @@ def generate_pptx_draft(
         deck["theme_accent"] = theme_accent
         deck["description"] = description
         deck["based_on_lesson"] = bool(lesson_context)
+        deck["deck_format"] = deck.get("deck_format") or "edubridge_clil_pptx"
         deck.setdefault("grade", grade)
         deck.setdefault("subject", subject)
         deck.setdefault("topic", topic)
         deck.pop("note", None)
         return deck
 
-    prompt = f"""
-{brief_txt}
-{teach}
-
-Tạo dàn ý PowerPoint JSON để GIẢNG DẠY đúng môn {subject}, đúng CHỦ ĐỀ “{topic}” (slide đẹp, giảng được, ảnh sát từng slide):
-{{
-  "title": "...",
-  "grade": "{grade}",
-  "subject": "{subject}",
-  "topic": "{topic}",
-  "language": "{language}",
-  "slides": [
-    {{
-      "layout": "title|content|two_column|table|cards|closing",
-      "title": "...",
-      "subtitle": "optional",
-      "bullets": ["teaching bullets"],
-      "left_title": "optional",
-      "right_title": "optional",
-      "left_bullets": ["..."],
-      "right_bullets": ["..."],
-      "table": {{"headers": ["A","B","C"], "rows": [["1","2","3"]]}},
-      "image_keyword": "5-8 English nouns describing the EXACT scene of THIS slide, Vietnam school",
-      "image_scene": "1 sentence: the exact photograph to generate (who, where, action), Vietnam school, matching THIS slide",
-      "notes": "Vietnamese teacher notes: how to teach this slide, questions to ask, timing"
-    }}
-  ]
-}}
-
-Rules:
-- Return exactly {min(slide_count, 7)} slides in THIS response (first part of a {slide_count}-slide deck).
-- Do not write the closing slide yet unless {slide_count} <= 7.
-- {lang_rule}
-- Slide 1 layout=title. Closing slide only in the final batch.
-- Include at least one layout=table, one layout=two_column, and one layout=cards.
-- Content slides: 4–6 bullets, mỗi bullet 8–20 từ.
-- two_column: 4 bullets mỗi cột.
-- cards: 3–4 cards.
-- table: 4–6 hàng sát nội dung.
-{follow_lesson}- image_keyword MUST describe the photo of THAT slide only (derived from slide title + bullets), ưu tiên Việt Nam.
-- image_scene: 1 câu cụ thể (ai, ở đâu, đang làm gì) để AI vẽ/chụp đúng nội dung slide, không generic.
-  Ví dụ: chào cờ → "vietnam school flag raising ceremony students red flag yellow star";
-  xếp hàng → "vietnamese students lining up schoolyard";
-  quốc ca → "students singing vietnam national anthem";
-  tôn trọng → "students saluting vietnam national flag".
-- Cấm keyword chung: background, abstract, education, learning, template.
-- Mỗi content slide có 1 ý kiến thức thật của “{topic}” (tên, sự kiện, công thức, nhân vật), không slogan trải nghiệm.
-- Cấm bullet: hands-on exploration, create a mini product, I learned / I will apply, classroom roles (Leader/Recorder).
-- Màu chủ đạo: {theme_color} / {theme_accent}.
-{context_hint}
-"""
-    first_n = min(slide_count, 7)
-    compact_pptx = (
-        f"{brief_txt}\n{teach}\n"
-        f"JSON PowerPoint giảng dạy môn {subject}, chủ đề “{topic}”, exactly {first_n} slides, short knowledge bullets, complete JSON.\n"
-        '{"title":"...","slides":[{"layout":"title","title":"...","bullets":["..."],"notes":"..."}]}\n'
-        "Slide 1 title. English on slide, Vietnamese notes. No experiential slogans."
+    prompt = pptx_clil_user_prompt(
+        brief=brief_txt,
+        teach=teach,
+        subject=subject,
+        grade=grade,
+        topic=topic,
+        profile=profile,
+        slide_count=slide_count,
+        duration_minutes=duration_minutes,
+        teacher_english_level=teacher_english_level,
+        student_english_level=student_english_level,
+        presentation_language=presentation_language,
+        pptx_detail=pptx_detail,
+        lesson_context=lesson_context,
+        has_book_reference=bool(book_reference),
+        has_lesson=bool(lesson_context),
     )
+    compact_pptx = pptx_clil_compact_prompt(subject, topic, grade, slide_count)
     try:
         data, source = _ask_studio_json(
             compact_pptx if light else prompt,
             system_en,
-            max_tokens=2048 if light else 3072,
-            timeout=30 if light else 40,
+            max_tokens=4096 if light else 8192,
+            timeout=45 if light else 90,
             compact_prompt=compact_pptx,
+            book_reference=book_reference,
         )
         slides = (data or {}).get("slides") if data else None
         if not isinstance(slides, list):
@@ -2743,15 +2710,14 @@ Rules:
             more, src2 = _ask_studio_json(
                 f"""{brief_txt}
 {teach}
-Create exactly {need} MORE slides that TEACH more knowledge of “{topic}” in {subject}.
-JSON: {{"slides":[...]}}.
-Do not repeat these titles: {titles}.
-Each slide = author / character / event / formula / definition of THIS topic — not classroom slogans.
-English on-slide text, Vietnamese notes. Topic "{topic}".
-{"The LAST slide must be layout=closing." if last_batch else "Do not use closing layout yet."}
-Short bullets. Complete JSON, do not truncate.
+Create exactly {need} MORE CLIL slides for “{topic}” ({subject}).
+JSON: {{"slides":[...]}} with slide_type, speaker_notes (teacher_script, vietnamese_support, questions).
+Do not repeat titles: {titles}.
+English on slide; full Speaker Notes. One slide one purpose. Topic "{topic}".
+{"Include homework + closing slides in this batch." if last_batch else "No closing yet."}
+Complete JSON.
 """,
-                system_en, max_tokens=3072, timeout=35,
+                system_en, max_tokens=6144, timeout=60, book_reference=book_reference,
             )
             extra = (more or {}).get("slides") if more else None
             if not isinstance(extra, list) or not extra:
@@ -2770,7 +2736,9 @@ Short bullets. Complete JSON, do not truncate.
     except Exception:
         current_app.logger.exception("generate_pptx_draft failed")
         try:
-            compact, src = _ask_studio_json(compact_pptx, system_en, max_tokens=2048, timeout=30)
+            compact, src = _ask_studio_json(
+                compact_pptx, system_en, max_tokens=2048, timeout=30, book_reference=book_reference,
+            )
             slides = (compact or {}).get("slides") if compact else []
             normalized = _enrich_image_keywords(
                 _normalize_pptx_slides(slides or [], topic, language), topic,
@@ -3097,6 +3065,7 @@ def generate_eight_step_draft(
     lesson_context: dict | None = None,
     quiz_context: dict | None = None,
     light: bool = False,
+    book_reference: dict | None = None,
 ) -> dict:
     teach = _teaching_content_rules(grade, subject, topic)
     brief = _teacher_brief(
@@ -3115,7 +3084,8 @@ def generate_eight_step_draft(
 
     def _ask(prompt_text: str) -> dict | None:
         data, _src = _ask_studio_json(
-            prompt_text, system, max_tokens=3072, timeout=35,
+            prompt_text, system, max_tokens=3072, timeout=40,
+            book_reference=book_reference,
         )
         return data
 
@@ -3128,7 +3098,9 @@ Complete JSON, do not truncate.
 """
     if light:
         try:
-            retry, src = _ask_studio_json(compact_eight, system, max_tokens=2048, timeout=30)
+            retry, src = _ask_studio_json(
+                compact_eight, system, max_tokens=2048, timeout=30, book_reference=book_reference,
+            )
             out = _normalize_eight_step(retry or {}, grade, subject, topic, description)
             out["source"] = "gemini" if retry else "template"
             out.pop("note", None)
@@ -3201,7 +3173,7 @@ FORBIDDEN: “Khái niệm nào liên quan đến {topic}?”, “Which sentence
             out.pop("note", None)
         else:
             retry, _src = _ask_studio_json(
-                compact_eight, system, max_tokens=2048, timeout=30,
+                compact_eight, system, max_tokens=2048, timeout=30, book_reference=book_reference,
             )
             out = _normalize_eight_step(retry or {}, grade, subject, topic, description)
             if retry:
@@ -3214,7 +3186,9 @@ FORBIDDEN: “Khái niệm nào liên quan đến {topic}?”, “Which sentence
     except Exception:
         current_app.logger.exception("generate_eight_step_draft failed")
         try:
-            retry, src = _ask_studio_json(compact_eight, system, max_tokens=2048, timeout=25)
+            retry, src = _ask_studio_json(
+                compact_eight, system, max_tokens=2048, timeout=25, book_reference=book_reference,
+            )
             out = _normalize_eight_step(retry or {}, grade, subject, topic, description)
             out["source"] = "gemini" if retry else "template"
             out.pop("note", None)
@@ -3226,9 +3200,119 @@ FORBIDDEN: “Khái niệm nào liên quan đến {topic}?”, “Which sentence
             return out
 
 
+def generate_worksheet_draft(
+    grade: str,
+    subject: str,
+    topic: str,
+    description: str = "",
+    extra_requirements: str = "",
+    lesson_context: dict | None = None,
+    deck_context: dict | None = None,
+    book_reference: dict | None = None,
+    teacher_english_level: str = "A2",
+    student_english_level: str = "A2",
+    worksheet_purpose: str = "explore",
+    worksheet_duration: int = 15,
+    language_mode: str = "english",
+    working_mode: str = "pair",
+    difficulty: str = "standard",
+    light: bool = False,
+    theme_color: str = "#0F2744",
+    theme_accent: str = "#F39C4A",
+) -> dict:
+    from app.services.studio_worksheet_clil import (
+        SYSTEM_WORKSHEET_CLIL,
+        fallback_worksheet,
+        normalize_worksheet,
+        worksheet_clil_compact,
+        worksheet_clil_user_prompt,
+    )
+
+    profile = _subject_profile_key(subject, topic)
+    worksheet_duration = max(5, min(int(worksheet_duration or 15), 45))
+    brief = _teacher_brief(
+        grade=grade, subject=subject, topic=topic, language=language_mode,
+        description=description, extra_requirements=extra_requirements,
+        theme_color=theme_color, theme_accent=theme_accent,
+        extra_lines=(
+            f"- Loại phiếu: {worksheet_purpose}\n"
+            f"- Thời gian làm phiếu: {worksheet_duration} phút\n"
+            f"- Ngôn ngữ phiếu: {language_mode}\n"
+            f"- Hình thức: {working_mode}\n"
+            f"- Độ khó: {difficulty}\n"
+        ),
+    )
+    teach = _teaching_content_rules(grade, subject, topic)
+    fb = fallback_worksheet(grade, subject, topic, worksheet_purpose)
+    fb["theme_color"] = theme_color
+    fb["theme_accent"] = theme_accent
+
+    def _finish(data: dict | None, source: str | None) -> dict:
+        out = normalize_worksheet(data or {}, fb, grade, subject, topic)
+        out["source"] = source or ("gemini" if data else "template")
+        out["theme_color"] = theme_color
+        out["theme_accent"] = theme_accent
+        out["based_on_lesson"] = bool(lesson_context)
+        out["based_on_deck"] = bool(deck_context)
+        out.pop("note", None)
+        return _json_safe(out)
+
+    prompt = worksheet_clil_user_prompt(
+        brief=brief,
+        teach=teach,
+        subject=subject,
+        grade=grade,
+        topic=topic,
+        profile=profile,
+        worksheet_purpose=worksheet_purpose,
+        worksheet_duration=worksheet_duration,
+        language_mode=language_mode,
+        working_mode=working_mode,
+        difficulty=difficulty,
+        teacher_english_level=teacher_english_level,
+        student_english_level=student_english_level,
+        lesson_context=lesson_context,
+        deck_context=deck_context,
+        has_book_reference=bool(book_reference),
+    )
+    compact = worksheet_clil_compact(subject, topic, grade)
+    try:
+        if light:
+            data, source = _ask_studio_json(
+                compact, SYSTEM_WORKSHEET_CLIL, max_tokens=3072, timeout=45,
+                compact_prompt=compact, book_reference=book_reference,
+            )
+        else:
+            data, source = _ask_studio_json(
+                prompt, SYSTEM_WORKSHEET_CLIL, max_tokens=8192, timeout=90,
+                compact_prompt=compact, book_reference=book_reference,
+            )
+        return _finish(data, source)
+    except Exception:
+        current_app.logger.exception("generate_worksheet_draft failed")
+        try:
+            data, source = _ask_studio_json(
+                compact, SYSTEM_WORKSHEET_CLIL, max_tokens=4096, timeout=60,
+                compact_prompt=compact, book_reference=book_reference,
+            )
+            return _finish(data, source)
+        except Exception:
+            return _finish(None, None)
+
+
 def build_docx_bytes(lesson: dict) -> bytes:
     from app.services.docx_builder import build_rich_docx_bytes
     return build_rich_docx_bytes(lesson)
+
+
+def worksheet_student_docx_bytes(worksheet: dict) -> bytes:
+    from app.services.docx_builder import build_worksheet_student_docx_bytes
+    return build_worksheet_student_docx_bytes(worksheet)
+
+
+def worksheet_teacher_docx_bytes(worksheet: dict) -> bytes:
+    from app.services.docx_builder import build_worksheet_teacher_docx_bytes
+    return build_worksheet_teacher_docx_bytes(worksheet)
 
 
 def build_pptx_bytes(deck: dict, light: bool = False) -> bytes:

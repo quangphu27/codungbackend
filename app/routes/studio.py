@@ -64,6 +64,31 @@ def _int(val, default: int, lo: int, hi: int) -> int:
     return max(lo, min(n, hi))
 
 
+def _book_reference_from_body(data: dict) -> dict | None:
+    br = data.get("book_reference")
+    if not isinstance(br, dict):
+        return None
+    text = br.get("text") if isinstance(br.get("text"), str) else ""
+    images = []
+    raw_imgs = br.get("images")
+    if isinstance(raw_imgs, list):
+        for img in raw_imgs[:8]:
+            if isinstance(img, dict) and img.get("data"):
+                images.append({
+                    "mime": img.get("mime") or "image/jpeg",
+                    "data": img["data"],
+                })
+    if not text.strip() and not images:
+        return None
+    return {
+        "text": text,
+        "images": images,
+        "filenames": br.get("filenames") if isinstance(br.get("filenames"), list) else [],
+        "image_count": len(images),
+        "has_text": bool(text.strip()),
+    }
+
+
 def _base_payload():
     data = request.get_json() or {}
     return {
@@ -86,6 +111,20 @@ def _base_payload():
         "deck": data.get("deck") if isinstance(data.get("deck"), dict) else None,
         "save": bool(data.get("save", True)),
         "light": bool(data.get("light")),
+        "book_reference": _book_reference_from_body(data),
+        "teacher_english_level": _text(data.get("teacher_english_level"), "A2") or "A2",
+        "student_english_level": _text(data.get("student_english_level"), "A2") or "A2",
+        "class_size": _text(data.get("class_size")),
+        "equipment": _text(data.get("equipment")),
+        "duration_minutes": _int(data.get("duration_minutes", 45), 45, 35, 90),
+        "presentation_language": _text(data.get("presentation_language"), "english") or "english",
+        "pptx_detail": _text(data.get("pptx_detail"), "balanced") or "balanced",
+        "worksheet_purpose": _text(data.get("worksheet_purpose"), "explore") or "explore",
+        "worksheet_duration": _int(data.get("worksheet_duration", 15), 15, 5, 45),
+        "worksheet_language_mode": _text(data.get("worksheet_language_mode"), "english") or "english",
+        "worksheet_working_mode": _text(data.get("worksheet_working_mode"), "pair") or "pair",
+        "worksheet_difficulty": _text(data.get("worksheet_difficulty"), "standard") or "standard",
+        "worksheet": data.get("worksheet") if isinstance(data.get("worksheet"), dict) else None,
     }
 
 
@@ -185,6 +224,40 @@ def _save_draft(db, user_id, kind: str, payload: dict, result: dict):
     return serialize_doc(doc)
 
 
+@studio_bp.route("/book-reference", methods=["POST"])
+@jwt_required()
+@teacher_required
+def upload_book_reference():
+    """Ảnh trang sách + PDF/Word — AI đọc để bám đúng bài khi tạo giáo án/đề/slide."""
+    from app.services.studio_reference import process_reference_uploads
+
+    uploads = request.files.getlist("files")
+    if not uploads or all(not (u and u.filename) for u in uploads):
+        single = request.files.get("file")
+        uploads = [single] if single and single.filename else []
+    if not uploads:
+        return jsonify({"message": "Chọn ít nhất một ảnh trang sách hoặc file PDF/Word."}), 400
+    try:
+        ref = process_reference_uploads(uploads)
+    except ValueError as exc:
+        return jsonify({"message": str(exc)}), 400
+    except Exception:
+        from flask import current_app
+        current_app.logger.exception("book-reference upload")
+        return jsonify({"message": "Không xử lý được tài liệu. Thử lại hoặc dùng ảnh/PDF khác."}), 500
+
+    names = ref.get("filenames") or []
+    parts = []
+    if ref.get("image_count"):
+        parts.append(f"{ref['image_count']} ảnh")
+    if ref.get("has_text"):
+        parts.append("đã trích chữ từ PDF/Word")
+    summary = ", ".join(parts) if parts else "Đã nhận tài liệu"
+    if names:
+        summary = f"{summary} ({', '.join(names[:4])}{'…' if len(names) > 4 else ''})"
+    return jsonify({"book_reference": ref, "summary": summary})
+
+
 @studio_bp.route("/status", methods=["GET"])
 @jwt_required()
 @teacher_required
@@ -221,6 +294,12 @@ def generate_lesson():
             theme_color=payload["theme_color"],
             theme_accent=payload["theme_accent"],
             light=light,
+            book_reference=payload.get("book_reference"),
+            teacher_english_level=payload.get("teacher_english_level"),
+            student_english_level=payload.get("student_english_level"),
+            class_size=payload.get("class_size") or "",
+            equipment=payload.get("equipment") or "",
+            duration_minutes=payload.get("duration_minutes"),
         )
 
     def _fallback_lesson():
@@ -278,6 +357,7 @@ def generate_quiz():
             theme_color=payload["theme_color"],
             theme_accent=payload["theme_accent"],
             light=light,
+            book_reference=payload.get("book_reference"),
         )
 
     def _fallback_quiz():
@@ -333,6 +413,12 @@ def generate_pptx():
             theme_color=payload["theme_color"],
             theme_accent=payload["theme_accent"],
             light=light,
+            book_reference=payload.get("book_reference"),
+            teacher_english_level=payload.get("teacher_english_level"),
+            student_english_level=payload.get("student_english_level"),
+            duration_minutes=payload.get("duration_minutes"),
+            presentation_language=payload.get("presentation_language"),
+            pptx_detail=payload.get("pptx_detail"),
         )
 
     def _fallback_pptx():
@@ -367,6 +453,100 @@ def generate_pptx():
     return jsonify({"deck": deck, "draft": draft})
 
 
+@studio_bp.route("/generate/worksheet", methods=["POST"])
+@jwt_required()
+@teacher_required
+def generate_worksheet():
+    payload = _base_payload()
+    if not payload["topic"]:
+        return jsonify({"message": "Vui lòng nhập chủ đề"}), 400
+
+    def _make_ws(light):
+        return studio_service.generate_worksheet_draft(
+            grade=payload["grade"],
+            subject=payload["subject"],
+            topic=payload["topic"],
+            description=payload["description"],
+            extra_requirements=payload["extra_requirements"],
+            lesson_context=payload.get("lesson"),
+            deck_context=payload.get("deck"),
+            book_reference=payload.get("book_reference"),
+            teacher_english_level=payload.get("teacher_english_level"),
+            student_english_level=payload.get("student_english_level"),
+            worksheet_purpose=payload.get("worksheet_purpose"),
+            worksheet_duration=payload.get("worksheet_duration"),
+            language_mode=payload.get("worksheet_language_mode"),
+            working_mode=payload.get("worksheet_working_mode"),
+            difficulty=payload.get("worksheet_difficulty"),
+            theme_color=payload["theme_color"],
+            theme_accent=payload["theme_accent"],
+            light=light,
+        )
+
+    def _fallback_ws():
+        from app.services.studio_worksheet_clil import fallback_worksheet
+        ws = fallback_worksheet(
+            payload["grade"], payload["subject"], payload["topic"],
+            payload.get("worksheet_purpose") or "explore",
+        )
+        ws["theme_color"] = payload["theme_color"]
+        ws["theme_accent"] = payload["theme_accent"]
+        return ws
+
+    worksheet = _call_or_light(payload, _make_ws, _fallback_ws)
+    draft = None
+    if payload["save"]:
+        try:
+            db = get_db()
+            user_id = to_object_id(get_jwt_identity())
+            draft = _save_draft(db, user_id, "worksheet", payload, worksheet)
+        except Exception:
+            from flask import current_app
+            current_app.logger.exception("save worksheet draft")
+            draft = None
+    return jsonify({"worksheet": worksheet, "draft": draft})
+
+
+@studio_bp.route("/export/worksheet-student-docx", methods=["POST"])
+@jwt_required()
+@teacher_required
+def export_worksheet_student_docx():
+    payload = _base_payload()
+    ws = payload.get("worksheet")
+    if not ws:
+        return jsonify({"message": "Thiếu phiếu học tập (worksheet)"}), 400
+    blob = studio_service.worksheet_student_docx_bytes(ws)
+    filename = _safe_download_name(ws.get("topic"), "phieu_hoc_tap", ".docx")
+    if not filename.startswith("phieu"):
+        filename = f"phieu_hoc_tap_{filename}"
+    return send_file(
+        io.BytesIO(blob),
+        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        as_attachment=True,
+        download_name=filename,
+    )
+
+
+@studio_bp.route("/export/worksheet-teacher-docx", methods=["POST"])
+@jwt_required()
+@teacher_required
+def export_worksheet_teacher_docx():
+    payload = _base_payload()
+    ws = payload.get("worksheet")
+    if not ws:
+        return jsonify({"message": "Thiếu phiếu học tập (worksheet)"}), 400
+    blob = studio_service.worksheet_teacher_docx_bytes(ws)
+    filename = _safe_download_name(ws.get("topic"), "huong_dan_phieu", ".docx")
+    if "huong_dan" not in filename:
+        filename = f"huong_dan_phieu_{filename}"
+    return send_file(
+        io.BytesIO(blob),
+        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        as_attachment=True,
+        download_name=filename,
+    )
+
+
 @studio_bp.route("/generate/eight-step", methods=["POST"])
 @jwt_required()
 @teacher_required
@@ -384,6 +564,7 @@ def generate_eight_step():
             lesson_context=payload.get("lesson"),
             quiz_context=payload.get("quiz"),
             light=light,
+            book_reference=payload.get("book_reference"),
         )
 
     def _fallback_eight():
@@ -847,6 +1028,41 @@ def _ensure_library_catalog(
     )
 
 
+def _merge_predefined_grades(rows: list) -> list:
+    from app.utils.gdpt_curriculum import CURRICULUM_GRADES, zero_kind_counts
+
+    seen = {str(r.get("name") or "").lower(): r for r in rows}
+    out = []
+    for name in CURRICULUM_GRADES:
+        row = seen.get(name.lower())
+        if row:
+            row = dict(row)
+            row["predefined"] = True
+            out.append(row)
+        else:
+            out.append({**zero_kind_counts(), "name": name, "catalog_only": True, "predefined": True})
+    return out
+
+
+def _merge_predefined_subjects(rows: list, grade: str) -> list:
+    from app.utils.gdpt_curriculum import subjects_for_grade, zero_kind_counts
+
+    names = subjects_for_grade(grade)
+    if not names:
+        return rows
+    seen = {str(r.get("name") or "").lower(): r for r in rows}
+    out = []
+    for name in names:
+        row = seen.get(name.lower())
+        if row:
+            row = dict(row)
+            row["predefined"] = True
+            out.append(row)
+        else:
+            out.append({**zero_kind_counts(), "name": name, "catalog_only": True, "predefined": True})
+    return out
+
+
 def _merge_catalog_grades(db, rows: list) -> list:
     seen = {str(r.get("name") or "").lower() for r in rows}
     for doc in db.library_catalog.find({"catalog_type": "grade"}):
@@ -895,11 +1111,50 @@ def _merge_catalog_topics(db, rows: list, grade: str, subject: str) -> list:
     return rows
 
 
-def _library_match(extra_query: dict | None = None) -> dict:
-    match = {"status": "approved"}
+def _library_scope_filter(scope: str, teacher_id) -> dict | None:
+    """shared = admin upload & quản lý; personal = giáo viên duyệt từ Teacher Studio."""
+    scope = (scope or "").strip().lower()
+    if scope == "shared":
+        return {"$or": [
+            {"library_scope": "shared"},
+            {"ai_source": "upload"},
+        ]}
+    if scope == "personal":
+        return {
+            "teacher_id": teacher_id,
+            "$or": [
+                {"library_scope": "personal"},
+                {
+                    "$and": [
+                        {"library_scope": {"$exists": False}},
+                        {"ai_source": {"$ne": "upload"}},
+                    ],
+                },
+            ],
+        }
+    return None
+
+
+def _item_library_scope(item: dict) -> str:
+    if item.get("library_scope") in ("shared", "personal"):
+        return item["library_scope"]
+    if item.get("ai_source") == "upload":
+        return "shared"
+    content = item.get("content") if isinstance(item.get("content"), dict) else {}
+    if content.get("uploaded_by_admin"):
+        return "shared"
+    return "personal"
+
+
+def _library_match(extra_query: dict | None = None, scope_filter: dict | None = None) -> dict:
+    parts = [{"status": "approved"}]
     if extra_query:
-        match.update(extra_query)
-    return match
+        parts.append(extra_query)
+    if scope_filter:
+        parts.append(scope_filter)
+    if len(parts) == 1:
+        return parts[0]
+    return {"$and": parts}
 
 
 def _library_kind_counts_group(field_expr) -> dict:
@@ -926,8 +1181,8 @@ def _empty_field_id(field: str) -> dict:
     }
 
 
-def _library_grades(db, extra_query: dict | None = None):
-    match = _library_match(extra_query)
+def _library_grades(db, extra_query: dict | None = None, scope_filter: dict | None = None):
+    match = _library_match(extra_query, scope_filter)
     pipeline = [
         {"$match": match},
         {"$group": _library_kind_counts_group(_empty_field_id("grade"))},
@@ -944,11 +1199,12 @@ def _library_grades(db, extra_query: dict | None = None):
             "file": int(row.get("file") or 0),
         })
     rows.sort(key=lambda r: _grade_sort_key(r["name"]))
-    return _merge_catalog_grades(db, rows)
+    rows = _merge_catalog_grades(db, rows)
+    return _merge_predefined_grades(rows)
 
 
-def _library_subjects(db, extra_query: dict | None = None, *, grade: str = ""):
-    match = _library_match(extra_query)
+def _library_subjects(db, extra_query: dict | None = None, *, grade: str = "", scope_filter: dict | None = None):
+    match = _library_match(extra_query, scope_filter)
     if grade:
         if grade.lower() == "khác":
             match["$or"] = [
@@ -975,13 +1231,14 @@ def _library_subjects(db, extra_query: dict | None = None, *, grade: str = ""):
         })
     rows.sort(key=lambda r: r["name"].lower())
     if grade:
-        return _merge_catalog_subjects(db, rows, grade)
+        rows = _merge_catalog_subjects(db, rows, grade)
+        return _merge_predefined_subjects(rows, grade)
     return rows
 
 
-def _library_topics(db, extra_query: dict | None = None, *, grade: str = "", subject: str = ""):
+def _library_topics(db, extra_query: dict | None = None, *, grade: str = "", subject: str = "", scope_filter: dict | None = None):
     """Bài học = nhóm học liệu theo chủ đề (topic) trong khối + môn."""
-    match = _library_match(extra_query)
+    match = _library_match(extra_query, scope_filter)
     if grade:
         if grade.lower() == "khác":
             match.setdefault("$and", []).append({"$or": [
@@ -1066,6 +1323,7 @@ def _guess_mime(filename: str, fallback: str = "application/octet-stream") -> st
 def _library_summary(item: dict) -> dict:
     data = serialize_doc(item) or {}
     data.pop("content", None)
+    data["library_scope"] = _item_library_scope(item)
     return data
 
 
@@ -1074,6 +1332,11 @@ def _library_summary(item: dict) -> dict:
 @teacher_required
 def list_library():
     db = get_db()
+    teacher_id = to_object_id(get_jwt_identity())
+    scope_raw = (request.args.get("scope") or "shared").strip().lower()
+    if scope_raw not in ("shared", "personal"):
+        scope_raw = "shared"
+    scope_filter = _library_scope_filter(scope_raw, teacher_id)
     kind = (request.args.get("kind") or "").strip()
     search = (request.args.get("search") or "").strip()
     grade_raw = (request.args.get("grade") or "").strip()
@@ -1124,6 +1387,8 @@ def list_library():
             {"grade": {"$regex": search, "$options": "i"}},
             {"teacher_name": {"$regex": search, "$options": "i"}},
         ]})
+    if scope_filter:
+        filters.append(scope_filter)
     if filters:
         query["$and"] = filters
     extra = {}
@@ -1135,13 +1400,13 @@ def list_library():
     subjects = []
     topics = []
     if browse and not grade:
-        grades = _library_grades(db, extra or None)
+        grades = _library_grades(db, extra or None, scope_filter)
     elif browse and grade and not subject:
-        subjects = _library_subjects(db, extra or None, grade=grade)
+        subjects = _library_subjects(db, extra or None, grade=grade, scope_filter=scope_filter)
     elif browse and grade and subject and not topic:
-        topics = _library_topics(db, extra or None, grade=grade, subject=subject)
+        topics = _library_topics(db, extra or None, grade=grade, subject=subject, scope_filter=scope_filter)
     elif browse and not grade and subject:
-        subjects = _library_subjects(db, extra or None)
+        subjects = _library_subjects(db, extra or None, scope_filter=scope_filter)
 
     fetch_items = bool(search or topic or (grade and subject) or (not browse))
     if browse and grade and subject and not topic:
@@ -1156,14 +1421,22 @@ def list_library():
             .skip((page - 1) * limit)
             .limit(limit)
         )
+    serialized_items = []
+    for raw in items:
+        row = serialize_doc(raw) or {}
+        row.pop("content", None)
+        row["library_scope"] = _item_library_scope(raw)
+        serialized_items.append(row)
+
     return jsonify({
-        "data": serialize_doc(items),
+        "data": serialized_items,
         "grades": grades,
         "subjects": subjects,
         "topics": topics,
         "grade": grade,
         "subject": subject,
         "topic": topic,
+        "scope": scope_raw,
         "total": total,
         "page": page,
         "pages": max(1, (total + limit - 1) // limit) if fetch_items else 1,
@@ -1177,47 +1450,39 @@ def library_catalog_create():
     """Admin tạo khối lớp, môn học hoặc bài học (chủ đề) trong cây Kho học liệu."""
     data = request.get_json() or {}
     ctype = (data.get("type") or "").strip().lower()
-    if ctype not in ("grade", "subject", "topic"):
-        return jsonify({"message": "type phải là grade, subject hoặc topic"}), 400
+    if ctype != "topic":
+        return jsonify({"message": "Khối và môn đã cố định theo GDPT; chỉ thêm bài học (type: topic)."}), 400
 
     grade = _norm_grade(data.get("grade") or "")
     subject = _norm_subject(data.get("subject") or "")
     topic = (data.get("topic") or data.get("title") or "").strip()
     description = (data.get("description") or "").strip()
 
-    if ctype == "grade":
-        if not grade or grade == "Khác":
-            return jsonify({"message": "Nhập tên khối lớp (vd: Lớp 10)"}), 400
-    elif ctype == "subject":
-        if not grade or grade == "Khác":
-            return jsonify({"message": "Chọn / nhập khối lớp trước"}), 400
-        if not subject or subject == "Khác":
-            return jsonify({"message": "Nhập tên môn học (vd: Toán)"}), 400
-    else:
-        if not grade or grade == "Khác":
-            return jsonify({"message": "Chọn khối lớp trước"}), 400
-        if not subject or subject == "Khác":
-            return jsonify({"message": "Chọn môn học trước"}), 400
-        if not topic:
-            return jsonify({"message": "Nhập tên bài học / chủ đề"}), 400
+    if not grade or grade == "Khác":
+        return jsonify({"message": "Chọn khối lớp trước"}), 400
+    if not subject or subject == "Khác":
+        return jsonify({"message": "Chọn môn học trước"}), 400
+    if not topic:
+        return jsonify({"message": "Nhập tên bài học / chủ đề"}), 400
+
+    from app.utils.gdpt_curriculum import subjects_for_grade
+
+    allowed = {s.lower() for s in subjects_for_grade(grade)}
+    if subject.lower() not in allowed:
+        return jsonify({"message": f"Môn không thuộc khối {grade} theo chương trình GDPT"}), 400
 
     db = get_db()
     user_id = to_object_id(get_jwt_identity())
     _ensure_library_catalog(
         db,
         grade=grade,
-        subject=subject if ctype in ("subject", "topic") else "",
-        topic=topic if ctype == "topic" else "",
-        description=description if ctype == "topic" else "",
+        subject=subject,
+        topic=topic,
+        description=description,
         user_id=user_id,
     )
 
-    if ctype == "grade":
-        label = grade
-    elif ctype == "subject":
-        label = f"{grade} · {subject}"
-    else:
-        label = f"{grade} · {subject} · {topic}"
+    label = f"{grade} · {subject} · {topic}"
 
     return jsonify({
         "message": f"Đã thêm {label} vào Kho học liệu",
@@ -1301,6 +1566,7 @@ def publish_to_library():
         "description": payload["description"] or content.get("description") or "",
         "language": "en" if kind == "quiz" else ("en+vi-notes" if kind == "pptx" else "bilingual"),
         "ai_source": content.get("source") or "ai",
+        "library_scope": "personal",
         "status": "approved",
         "teacher_id": teacher_id,
         "teacher_name": teacher_name,
@@ -1313,7 +1579,10 @@ def publish_to_library():
     }
     existing = db.library_items.find_one({
         "teacher_id": teacher_id,
+        "library_scope": "personal",
         "kind": kind,
+        "grade": doc["grade"],
+        "subject": doc["subject"],
         "topic": topic,
         "status": "approved",
     })
@@ -1410,6 +1679,7 @@ def library_upload_material():
         "description": description,
         "language": "vi" if item_kind == "file" else "en+vi-notes",
         "ai_source": "upload",
+        "library_scope": "shared",
         "status": "approved",
         "teacher_id": teacher_id,
         "teacher_name": teacher_name,
@@ -1422,7 +1692,7 @@ def library_upload_material():
     }
     result = db.library_items.insert_one(doc)
     doc["_id"] = result.inserted_id
-    msg = "Đã tải PowerPoint vào bài học" if item_kind == "pptx" else "Đã tải tài liệu vào bài học"
+    msg = "Đã tải PowerPoint vào kho chung" if item_kind == "pptx" else "Đã tải tài liệu vào kho chung"
     return jsonify({
         "message": msg,
         "item": _library_summary(doc),
@@ -1503,8 +1773,12 @@ def library_delete(item_id):
     item = db.library_items.find_one({"_id": to_object_id(item_id)})
     if not item:
         return jsonify({"message": "Không tìm thấy học liệu"}), 404
+    scope = _item_library_scope(item)
     owner = item.get("teacher_id")
-    if role != "super_admin" and str(owner) != str(teacher_id):
-        return jsonify({"message": "Chỉ người đăng hoặc admin mới được xóa"}), 403
+    if scope == "shared":
+        if role != "super_admin":
+            return jsonify({"message": "Chỉ admin mới được xóa học liệu kho chung"}), 403
+    elif role != "super_admin" and str(owner) != str(teacher_id):
+        return jsonify({"message": "Chỉ người đăng hoặc admin mới được xóa kho cá nhân"}), 403
     db.library_items.delete_one({"_id": item["_id"]})
     return jsonify({"message": "Đã xóa khỏi Kho học liệu"})
