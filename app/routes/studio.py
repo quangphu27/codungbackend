@@ -784,6 +784,117 @@ def _grade_sort_key(name: str) -> tuple:
     return (1, str(name or ""))
 
 
+def _zero_kind_counts() -> dict:
+    return {"total": 0, "lesson": 0, "quiz": 0, "pptx": 0, "file": 0}
+
+
+def _grade_regex(value: str) -> dict:
+    return {"$regex": f"^{re.escape(_norm_grade(value))}$", "$options": "i"}
+
+
+def _subject_regex(value: str) -> dict:
+    return {"$regex": f"^{re.escape(_norm_subject(value))}$", "$options": "i"}
+
+
+def _ensure_library_catalog(
+    db,
+    *,
+    grade: str,
+    subject: str = "",
+    topic: str = "",
+    description: str = "",
+    user_id=None,
+) -> None:
+    """Đảm bảo khối / môn / bài học tồn tại trong cây Kho (kể cả chưa có file)."""
+    grade = _norm_grade(grade)
+    subject = _norm_subject(subject) if subject else ""
+    topic = (topic or "").strip()
+    if not grade or grade == "Khác":
+        return
+    now = utc_now()
+    base = {"updated_at": now}
+    if user_id:
+        base["created_by"] = user_id
+
+    db.library_catalog.update_one(
+        {"catalog_type": "grade", "grade": grade},
+        {"$set": {**base, "catalog_type": "grade", "grade": grade, "subject": "", "topic": ""},
+         "$setOnInsert": {"created_at": now, "description": ""}},
+        upsert=True,
+    )
+    if not subject or subject == "Khác":
+        return
+    db.library_catalog.update_one(
+        {"catalog_type": "subject", "grade": grade, "subject": subject},
+        {"$set": {**base, "catalog_type": "subject", "grade": grade, "subject": subject, "topic": ""},
+         "$setOnInsert": {"created_at": now, "description": ""}},
+        upsert=True,
+    )
+    if not topic or topic == "Khác":
+        return
+    db.library_catalog.update_one(
+        {"catalog_type": "topic", "grade": grade, "subject": subject, "topic": topic},
+        {"$set": {
+            **base,
+            "catalog_type": "topic",
+            "grade": grade,
+            "subject": subject,
+            "topic": topic,
+            "description": (description or "").strip(),
+        },
+         "$setOnInsert": {"created_at": now}},
+        upsert=True,
+    )
+
+
+def _merge_catalog_grades(db, rows: list) -> list:
+    seen = {str(r.get("name") or "").lower() for r in rows}
+    for doc in db.library_catalog.find({"catalog_type": "grade"}):
+        name = _norm_grade(doc.get("grade"))
+        if not name or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        rows.append({**_zero_kind_counts(), "name": name, "catalog_only": True})
+    rows.sort(key=lambda r: _grade_sort_key(r["name"]))
+    return rows
+
+
+def _merge_catalog_subjects(db, rows: list, grade: str) -> list:
+    seen = {str(r.get("name") or "").lower() for r in rows}
+    q = {"catalog_type": "subject", "grade": _grade_regex(grade)}
+    for doc in db.library_catalog.find(q):
+        name = _norm_subject(doc.get("subject"))
+        if not name or name.lower() in seen:
+            continue
+        seen.add(name.lower())
+        rows.append({**_zero_kind_counts(), "name": name, "catalog_only": True})
+    rows.sort(key=lambda r: r["name"].lower())
+    return rows
+
+
+def _merge_catalog_topics(db, rows: list, grade: str, subject: str) -> list:
+    seen = {str(r.get("topic") or "").lower() for r in rows}
+    q = {
+        "catalog_type": "topic",
+        "grade": _grade_regex(grade),
+        "subject": _subject_regex(subject),
+    }
+    for doc in db.library_catalog.find(q):
+        topic = str(doc.get("topic") or "").strip()
+        if not topic or topic.lower() in seen:
+            continue
+        seen.add(topic.lower())
+        rows.append({
+            **_zero_kind_counts(),
+            "topic": topic,
+            "title": topic,
+            "description": (doc.get("description") or "").strip(),
+            "catalog_only": True,
+        })
+    rows.sort(key=lambda r: r["topic"].lower())
+    return rows
+
+
 def _library_match(extra_query: dict | None = None) -> dict:
     match = {"status": "approved"}
     if extra_query:
@@ -833,7 +944,7 @@ def _library_grades(db, extra_query: dict | None = None):
             "file": int(row.get("file") or 0),
         })
     rows.sort(key=lambda r: _grade_sort_key(r["name"]))
-    return rows
+    return _merge_catalog_grades(db, rows)
 
 
 def _library_subjects(db, extra_query: dict | None = None, *, grade: str = ""):
@@ -863,6 +974,8 @@ def _library_subjects(db, extra_query: dict | None = None, *, grade: str = ""):
             "file": int(row.get("file") or 0),
         })
     rows.sort(key=lambda r: r["name"].lower())
+    if grade:
+        return _merge_catalog_subjects(db, rows, grade)
     return rows
 
 
@@ -910,6 +1023,8 @@ def _library_topics(db, extra_query: dict | None = None, *, grade: str = "", sub
             "file": int(row.get("file") or 0),
         })
     rows.sort(key=lambda r: r["topic"].lower())
+    if grade and subject:
+        return _merge_catalog_topics(db, rows, grade, subject)
     return rows
 
 
@@ -1055,6 +1170,63 @@ def list_library():
     })
 
 
+@studio_bp.route("/library/catalog", methods=["POST"])
+@jwt_required()
+@admin_required
+def library_catalog_create():
+    """Admin tạo khối lớp, môn học hoặc bài học (chủ đề) trong cây Kho học liệu."""
+    data = request.get_json() or {}
+    ctype = (data.get("type") or "").strip().lower()
+    if ctype not in ("grade", "subject", "topic"):
+        return jsonify({"message": "type phải là grade, subject hoặc topic"}), 400
+
+    grade = _norm_grade(data.get("grade") or "")
+    subject = _norm_subject(data.get("subject") or "")
+    topic = (data.get("topic") or data.get("title") or "").strip()
+    description = (data.get("description") or "").strip()
+
+    if ctype == "grade":
+        if not grade or grade == "Khác":
+            return jsonify({"message": "Nhập tên khối lớp (vd: Lớp 10)"}), 400
+    elif ctype == "subject":
+        if not grade or grade == "Khác":
+            return jsonify({"message": "Chọn / nhập khối lớp trước"}), 400
+        if not subject or subject == "Khác":
+            return jsonify({"message": "Nhập tên môn học (vd: Toán)"}), 400
+    else:
+        if not grade or grade == "Khác":
+            return jsonify({"message": "Chọn khối lớp trước"}), 400
+        if not subject or subject == "Khác":
+            return jsonify({"message": "Chọn môn học trước"}), 400
+        if not topic:
+            return jsonify({"message": "Nhập tên bài học / chủ đề"}), 400
+
+    db = get_db()
+    user_id = to_object_id(get_jwt_identity())
+    _ensure_library_catalog(
+        db,
+        grade=grade,
+        subject=subject if ctype in ("subject", "topic") else "",
+        topic=topic if ctype == "topic" else "",
+        description=description if ctype == "topic" else "",
+        user_id=user_id,
+    )
+
+    if ctype == "grade":
+        label = grade
+    elif ctype == "subject":
+        label = f"{grade} · {subject}"
+    else:
+        label = f"{grade} · {subject} · {topic}"
+
+    return jsonify({
+        "message": f"Đã thêm {label} vào Kho học liệu",
+        "grade": grade,
+        "subject": subject if ctype in ("subject", "topic") else "",
+        "topic": topic if ctype == "topic" else "",
+    }), 201
+
+
 @studio_bp.route("/library", methods=["POST"])
 @jwt_required()
 @teacher_required
@@ -1111,6 +1283,14 @@ def publish_to_library():
     teacher_name = user.get("full_name") or user.get("name") or "Giáo viên"
     topic = payload["topic"] or content.get("topic") or ""
     title = _library_title(kind, content, topic)
+    _ensure_library_catalog(
+        db,
+        grade=payload["grade"] or content.get("grade") or "",
+        subject=payload["subject"] or content.get("subject") or "",
+        topic=topic,
+        description=payload["description"] or content.get("description") or "",
+        user_id=teacher_id,
+    )
     now = utc_now()
     doc = {
         "kind": kind,
@@ -1211,6 +1391,14 @@ def library_upload_material():
     doc_title = title or filename
     ext = os.path.splitext(filename)[1].lower().lstrip(".")
     item_kind = "pptx" if ext in ("ppt", "pptx") else "file"
+    _ensure_library_catalog(
+        db,
+        grade=grade,
+        subject=subject,
+        topic=topic,
+        description=description,
+        user_id=teacher_id,
+    )
     now = utc_now()
     doc = {
         "kind": item_kind,

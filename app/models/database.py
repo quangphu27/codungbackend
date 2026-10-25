@@ -100,6 +100,17 @@ def create_indexes(db):
           [("status", 1), ("grade", 1), ("subject", 1), ("topic", 1)],
           [("teacher_id", 1), ("kind", 1), ("topic", 1)],
       ],
+      "library_catalog": [
+          [("catalog_type", 1), ("grade", 1)],
+          [("catalog_type", 1), ("grade", 1), ("subject", 1)],
+          [
+              ("catalog_type", 1),
+              ("grade", 1),
+              ("subject", 1),
+              ("topic", 1),
+              {"unique": True, "name": "library_catalog_topic_unique"},
+          ],
+      ],
       "notifications": [
           [("user_id", 1)],
           [("read", 1)],
