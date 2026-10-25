@@ -97,6 +97,7 @@ def create_indexes(db):
           [("status", 1), ("approved_at", -1)],
           [("kind", 1), ("status", 1)],
           [("status", 1), ("subject", 1), ("approved_at", -1)],
+          [("status", 1), ("grade", 1), ("subject", 1), ("topic", 1)],
           [("teacher_id", 1), ("kind", 1), ("topic", 1)],
       ],
       "notifications": [

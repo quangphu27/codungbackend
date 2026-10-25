@@ -705,29 +705,82 @@ def _norm_subject(name: str) -> str:
     return text or "Khác"
 
 
-def _library_subjects(db, extra_query: dict | None = None):
+def _norm_grade(name: str) -> str:
+    text = " ".join(str(name or "").split())
+    return text or "Khác"
+
+
+def _grade_sort_key(name: str) -> tuple:
+    m = re.search(r"(\d+)", str(name or ""))
+    if m:
+        return (0, int(m.group(1)))
+    return (1, str(name or ""))
+
+
+def _library_match(extra_query: dict | None = None) -> dict:
     match = {"status": "approved"}
     if extra_query:
         match.update(extra_query)
+    return match
+
+
+def _library_kind_counts_group(field_expr) -> dict:
+    return {
+        "_id": field_expr,
+        "total": {"$sum": 1},
+        "lesson": {"$sum": {"$cond": [{"$eq": ["$kind", "lesson"]}, 1, 0]}},
+        "quiz": {"$sum": {"$cond": [{"$eq": ["$kind", "quiz"]}, 1, 0]}},
+        "pptx": {"$sum": {"$cond": [{"$eq": ["$kind", "pptx"]}, 1, 0]}},
+    }
+
+
+def _empty_field_id(field: str) -> dict:
+    return {
+        "$cond": [
+            {"$or": [
+                {"$eq": [{"$ifNull": [f"${field}", ""]}, ""]},
+                {"$eq": [f"${field}", None]},
+            ]},
+            "Khác",
+            f"${field}",
+        ]
+    }
+
+
+def _library_grades(db, extra_query: dict | None = None):
+    match = _library_match(extra_query)
     pipeline = [
         {"$match": match},
-        {"$group": {
-            "_id": {
-                "$cond": [
-                    {"$or": [
-                        {"$eq": [{"$ifNull": ["$subject", ""]}, ""]},
-                        {"$eq": ["$subject", None]},
-                    ]},
-                    "Khác",
-                    "$subject",
-                ]
-            },
-            "total": {"$sum": 1},
-            "lesson": {"$sum": {"$cond": [{"$eq": ["$kind", "lesson"]}, 1, 0]}},
-            "quiz": {"$sum": {"$cond": [{"$eq": ["$kind", "quiz"]}, 1, 0]}},
-            "pptx": {"$sum": {"$cond": [{"$eq": ["$kind", "pptx"]}, 1, 0]}},
-        }},
-        {"$sort": {"_id": 1}},
+        {"$group": _library_kind_counts_group(_empty_field_id("grade"))},
+    ]
+    rows = []
+    for row in db.library_items.aggregate(pipeline):
+        name = _norm_grade(row.get("_id"))
+        rows.append({
+            "name": name,
+            "total": int(row.get("total") or 0),
+            "lesson": int(row.get("lesson") or 0),
+            "quiz": int(row.get("quiz") or 0),
+            "pptx": int(row.get("pptx") or 0),
+        })
+    rows.sort(key=lambda r: _grade_sort_key(r["name"]))
+    return rows
+
+
+def _library_subjects(db, extra_query: dict | None = None, *, grade: str = ""):
+    match = _library_match(extra_query)
+    if grade:
+        if grade.lower() == "khác":
+            match["$or"] = [
+                {"grade": {"$in": ["", "Khác"]}},
+                {"grade": {"$exists": False}},
+                {"grade": None},
+            ]
+        else:
+            match["grade"] = {"$regex": f"^{re.escape(grade)}$", "$options": "i"}
+    pipeline = [
+        {"$match": match},
+        {"$group": _library_kind_counts_group(_empty_field_id("subject"))},
     ]
     rows = []
     for row in db.library_items.aggregate(pipeline):
@@ -739,6 +792,53 @@ def _library_subjects(db, extra_query: dict | None = None):
             "quiz": int(row.get("quiz") or 0),
             "pptx": int(row.get("pptx") or 0),
         })
+    rows.sort(key=lambda r: r["name"].lower())
+    return rows
+
+
+def _library_topics(db, extra_query: dict | None = None, *, grade: str = "", subject: str = ""):
+    """Bài học = nhóm học liệu theo chủ đề (topic) trong khối + môn."""
+    match = _library_match(extra_query)
+    if grade:
+        if grade.lower() == "khác":
+            match.setdefault("$and", []).append({"$or": [
+                {"grade": {"$in": ["", "Khác"]}},
+                {"grade": {"$exists": False}},
+                {"grade": None},
+            ]})
+        else:
+            match["grade"] = {"$regex": f"^{re.escape(grade)}$", "$options": "i"}
+    if subject:
+        if subject.lower() == "khác":
+            match.setdefault("$and", []).append({"$or": [
+                {"subject": {"$in": ["", "Khác"]}},
+                {"subject": {"$exists": False}},
+                {"subject": None},
+            ]})
+        else:
+            match["subject"] = {"$regex": f"^{re.escape(subject)}$", "$options": "i"}
+    pipeline = [
+        {"$match": match},
+        {"$group": {
+            **_library_kind_counts_group(_empty_field_id("topic")),
+            "title": {"$first": "$title"},
+            "description": {"$first": "$description"},
+        }},
+        {"$sort": {"_id": 1}},
+    ]
+    rows = []
+    for row in db.library_items.aggregate(pipeline):
+        topic = str(row.get("_id") or "").strip() or "Khác"
+        rows.append({
+            "topic": topic,
+            "title": (row.get("title") or topic).strip(),
+            "description": (row.get("description") or "").strip(),
+            "total": int(row.get("total") or 0),
+            "lesson": int(row.get("lesson") or 0),
+            "quiz": int(row.get("quiz") or 0),
+            "pptx": int(row.get("pptx") or 0),
+        })
+    rows.sort(key=lambda r: r["topic"].lower())
     return rows
 
 
@@ -763,29 +863,52 @@ def list_library():
     db = get_db()
     kind = (request.args.get("kind") or "").strip()
     search = (request.args.get("search") or "").strip()
-    subject = _norm_subject(request.args.get("subject") or "")
-    if subject == "Khác" and not (request.args.get("subject") or "").strip():
+    grade_raw = (request.args.get("grade") or "").strip()
+    subject_raw = (request.args.get("subject") or "").strip()
+    topic_raw = (request.args.get("topic") or "").strip()
+    grade = _norm_grade(grade_raw) if grade_raw else ""
+    subject = _norm_subject(subject_raw) if subject_raw else ""
+    topic = topic_raw.strip() if topic_raw else ""
+    if subject == "Khác" and not subject_raw:
         subject = ""
+    if grade == "Khác" and not grade_raw:
+        grade = ""
     page = max(1, int(request.args.get("page") or 1))
     limit = min(24, max(6, int(request.args.get("limit") or 12)))
     query = {"status": "approved"}
     if kind in KIND_LABELS:
         query["kind"] = kind
     filters = []
-    if subject:
-        if subject.lower() == "khác":
+
+    def _field_filter(field: str, value: str):
+        if not value:
+            return
+        if value.lower() == "khác":
             filters.append({"$or": [
-                {"subject": {"$in": ["", "Khác"]}},
-                {"subject": {"$exists": False}},
-                {"subject": None},
+                {field: {"$in": ["", "Khác"]}},
+                {field: {"$exists": False}},
+                {field: None},
             ]})
         else:
-            filters.append({"subject": {"$regex": f"^{re.escape(subject)}$", "$options": "i"}})
+            filters.append({field: {"$regex": f"^{re.escape(value)}$", "$options": "i"}})
+
+    _field_filter("grade", grade)
+    _field_filter("subject", subject)
+    if topic:
+        if topic.lower() == "khác":
+            filters.append({"$or": [
+                {"topic": {"$in": ["", "Khác"]}},
+                {"topic": {"$exists": False}},
+                {"topic": None},
+            ]})
+        else:
+            filters.append({"topic": {"$regex": f"^{re.escape(topic)}$", "$options": "i"}})
     if search:
         filters.append({"$or": [
             {"title": {"$regex": search, "$options": "i"}},
             {"topic": {"$regex": search, "$options": "i"}},
             {"subject": {"$regex": search, "$options": "i"}},
+            {"grade": {"$regex": search, "$options": "i"}},
             {"teacher_name": {"$regex": search, "$options": "i"}},
         ]})
     if filters:
@@ -793,23 +916,44 @@ def list_library():
     extra = {}
     if kind in KIND_LABELS:
         extra["kind"] = kind
-    if search:
-        extra["$or"] = filters[-1]["$or"]
-    subjects = _library_subjects(db, extra or None)
-    total = db.library_items.count_documents(query)
-    items = list(
-        db.library_items.find(query, {"content": 0})
-        .sort("approved_at", -1)
-        .skip((page - 1) * limit)
-        .limit(limit)
-    )
+
+    browse = not search
+    grades = []
+    subjects = []
+    topics = []
+    if browse and not grade:
+        grades = _library_grades(db, extra or None)
+    elif browse and grade and not subject:
+        subjects = _library_subjects(db, extra or None, grade=grade)
+    elif browse and grade and subject and not topic:
+        topics = _library_topics(db, extra or None, grade=grade, subject=subject)
+    elif browse and not grade and subject:
+        subjects = _library_subjects(db, extra or None)
+
+    fetch_items = bool(search or topic or (grade and subject) or (not browse))
+    if browse and grade and subject and not topic:
+        fetch_items = False
+
+    total = db.library_items.count_documents(query) if fetch_items else 0
+    items = []
+    if fetch_items:
+        items = list(
+            db.library_items.find(query, {"content": 0})
+            .sort("approved_at", -1)
+            .skip((page - 1) * limit)
+            .limit(limit)
+        )
     return jsonify({
         "data": serialize_doc(items),
+        "grades": grades,
         "subjects": subjects,
+        "topics": topics,
+        "grade": grade,
         "subject": subject,
+        "topic": topic,
         "total": total,
         "page": page,
-        "pages": max(1, (total + limit - 1) // limit),
+        "pages": max(1, (total + limit - 1) // limit) if fetch_items else 1,
     })
 
 
