@@ -104,6 +104,71 @@ def _call_or_light(payload: dict, make, fallback):
         return fallback()
 
 
+def _attach_studio_file_cache(content: dict, cache_kind: str, *, light: bool = False) -> dict:
+    """Sau khi AI tạo nội dung JSON, build file Word/PPTX và lưu Cloudinary."""
+    if not content or not isinstance(content, dict):
+        return content
+    from app.services.studio_files import ensure_studio_file
+
+    topic = content.get("topic") or ""
+    if cache_kind == "lesson_docx":
+        filename = _safe_download_name(topic, "giao_an", ".docx")
+        if not filename.startswith("giao_an"):
+            filename = f"giao_an_{filename}"
+        cache_payload = content
+        builder = lambda: studio_service.build_docx_bytes(content)
+    elif cache_kind == "quiz_docx":
+        filename = _safe_download_name(topic, "de_kiem_tra", ".docx")
+        if not filename.startswith("de_"):
+            filename = f"de_kiem_tra_{filename}"
+        cache_payload = content
+        builder = lambda: studio_service.quiz_to_docx_bytes(content)
+    elif cache_kind == "pptx":
+        filename = _safe_download_name(topic, "slide", ".pptx")
+        if not filename.startswith("slide"):
+            filename = f"slide_{filename}"
+        cache_payload = {**content, "light": light}
+
+        def builder():
+            try:
+                return studio_service.build_pptx_bytes(content, light=light)
+            except Exception:
+                from flask import current_app
+                current_app.logger.exception("studio pptx cache build failed, retry light")
+                return studio_service.build_pptx_bytes(content, light=True)
+
+    else:
+        return content
+
+    meta = ensure_studio_file(cache_kind, cache_payload, filename, builder)
+    if not meta.get("file_url"):
+        return content
+    out = dict(content)
+    out.update({k: v for k, v in meta.items() if v is not None})
+    if cache_kind == "pptx":
+        out["light"] = light
+    return out
+
+
+def _send_cached_studio_file(kind: str, payload: dict, filename: str, mime: str):
+    from app.services.studio_files import fetch_studio_file_bytes
+
+    blob = fetch_studio_file_bytes(kind, payload)
+    if not blob:
+        return jsonify({
+            "message": (
+                "Chưa có file đã lưu. Hãy bấm Tạo lại giáo án/đề/slide "
+                "để hệ thống lưu Word hoặc PowerPoint lên Cloudinary."
+            ),
+        }), 404
+    return send_file(
+        io.BytesIO(blob),
+        mimetype=mime,
+        as_attachment=True,
+        download_name=filename,
+    )
+
+
 def _save_draft(db, user_id, kind: str, payload: dict, result: dict):
     doc = {
         "teacher_id": user_id,
@@ -170,6 +235,11 @@ def generate_lesson():
         return lesson
 
     lesson = _call_or_light(payload, _make_lesson, _fallback_lesson)
+    try:
+        lesson = _attach_studio_file_cache(lesson, "lesson_docx")
+    except Exception:
+        from flask import current_app
+        current_app.logger.exception("lesson file cache after generate")
 
     draft = None
     if payload["save"]:
@@ -222,6 +292,11 @@ def generate_quiz():
         return quiz
 
     quiz = _call_or_light(payload, _make_quiz, _fallback_quiz)
+    try:
+        quiz = _attach_studio_file_cache(quiz, "quiz_docx")
+    except Exception:
+        from flask import current_app
+        current_app.logger.exception("quiz file cache after generate")
 
     draft = None
     if payload["save"]:
@@ -272,6 +347,11 @@ def generate_pptx():
         return deck
 
     deck = _call_or_light(payload, _make_pptx, _fallback_pptx)
+    try:
+        deck = _attach_studio_file_cache(deck, "pptx", light=bool(payload.get("light")))
+    except Exception:
+        from flask import current_app
+        current_app.logger.exception("pptx file cache after generate")
 
     draft = None
     if payload["save"]:
@@ -499,16 +579,11 @@ def export_docx():
     filename = _safe_download_name(lesson.get("topic"), "giao_an", ".docx")
     if not filename.startswith("giao_an"):
         filename = f"giao_an_{filename}"
-    from app.services.studio_files import get_or_build_file
-    content = get_or_build_file(
-        "lesson_docx", lesson, filename,
-        lambda: studio_service.build_docx_bytes(lesson),
-    )
-    return send_file(
-        io.BytesIO(content),
-        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        as_attachment=True,
-        download_name=filename,
+    return _send_cached_studio_file(
+        "lesson_docx",
+        lesson,
+        filename,
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
 
 
@@ -524,16 +599,11 @@ def export_quiz_docx():
     filename = _safe_download_name(quiz.get("topic"), "de_kiem_tra", ".docx")
     if not filename.startswith("de_"):
         filename = f"de_kiem_tra_{filename}"
-    from app.services.studio_files import get_or_build_file
-    content = get_or_build_file(
-        "quiz_docx", quiz, filename,
-        lambda: studio_service.quiz_to_docx_bytes(quiz),
-    )
-    return send_file(
-        io.BytesIO(content),
-        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        as_attachment=True,
-        download_name=filename,
+    return _send_cached_studio_file(
+        "quiz_docx",
+        quiz,
+        filename,
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     )
 
 
@@ -551,21 +621,12 @@ def export_pptx():
     if not filename.startswith("slide"):
         filename = f"slide_{filename}"
 
-    def _build_pptx():
-        try:
-            return studio_service.build_pptx_bytes(deck, light=light)
-        except Exception:
-            from flask import current_app
-            current_app.logger.exception("export pptx failed, retry light")
-            return studio_service.build_pptx_bytes(deck, light=True)
-
-    from app.services.studio_files import get_or_build_file
-    content = get_or_build_file("pptx", {**deck, "light": light}, filename, _build_pptx)
-    return send_file(
-        io.BytesIO(content),
-        mimetype="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        as_attachment=True,
-        download_name=filename,
+    cache_payload = {**deck, "light": light}
+    return _send_cached_studio_file(
+        "pptx",
+        cache_payload,
+        filename,
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     )
 
 
@@ -1032,12 +1093,19 @@ def publish_to_library():
     if not content or not isinstance(content, dict):
         return jsonify({"message": "Thiếu nội dung học liệu để duyệt vào kho"}), 400
 
-    from app.services.studio_files import cached_url
     file_kind = {"lesson": "lesson_docx", "quiz": "quiz_docx", "pptx": "pptx"}.get(kind)
-    file_url = cached_url(file_kind, content) if file_kind else None
-    if file_url:
-        content = dict(content)
-        content["file_url"] = file_url
+    if file_kind and not content.get("file_url"):
+        try:
+            content = _attach_studio_file_cache(
+                content,
+                file_kind,
+                light=bool(content.get("light")),
+            )
+        except Exception:
+            from flask import current_app
+            current_app.logger.exception("library publish file cache")
+    content = dict(content)
+    file_url = content.get("file_url")
 
     user = db.users.find_one({"_id": teacher_id}) or {}
     teacher_name = user.get("full_name") or user.get("name") or "Giáo viên"
@@ -1141,16 +1209,18 @@ def library_upload_material():
         "uploaded_by_admin": True,
     }
     doc_title = title or filename
+    ext = os.path.splitext(filename)[1].lower().lstrip(".")
+    item_kind = "pptx" if ext in ("ppt", "pptx") else "file"
     now = utc_now()
     doc = {
-        "kind": "file",
+        "kind": item_kind,
         "title": doc_title,
         "filename": filename,
         "topic": topic,
         "grade": grade,
         "subject": subject,
         "description": description,
-        "language": "vi",
+        "language": "vi" if item_kind == "file" else "en+vi-notes",
         "ai_source": "upload",
         "status": "approved",
         "teacher_id": teacher_id,
@@ -1164,8 +1234,9 @@ def library_upload_material():
     }
     result = db.library_items.insert_one(doc)
     doc["_id"] = result.inserted_id
+    msg = "Đã tải PowerPoint vào bài học" if item_kind == "pptx" else "Đã tải tài liệu vào bài học"
     return jsonify({
-        "message": "Đã tải tài liệu vào bài học",
+        "message": msg,
         "item": _library_summary(doc),
     }), 201
 
@@ -1191,52 +1262,46 @@ def library_download(item_id):
         return jsonify({"message": "Không tìm thấy học liệu"}), 404
     content = item.get("content") or {}
     kind = item.get("kind")
-    from app.services.studio_files import fetch_bytes, get_or_build_file
-    cached_url = (content.get("file_url") if isinstance(content, dict) else None) or item.get("file_url")
-    if cached_url:
-        blob = fetch_bytes(cached_url)
-        if blob:
-            if kind == "file":
-                filename = content.get("filename") or item.get("title") or "tai_lieu"
-                mime = content.get("mime") or _guess_mime(filename)
-                stem, ext = os.path.splitext(filename)
-                safe = _safe_download_name(stem, "tai_lieu", ext or ".bin")
-                return send_file(io.BytesIO(blob), mimetype=mime, as_attachment=True, download_name=safe)
-            if kind == "pptx":
-                mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-                filename = _safe_download_name(item.get("title"), "slide", ".pptx")
-            elif kind == "quiz":
-                mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                filename = _safe_download_name(item.get("title"), "quiz", ".docx")
-            else:
-                mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                filename = _safe_download_name(item.get("title"), "giao_an", ".docx")
-            return send_file(io.BytesIO(blob), mimetype=mime, as_attachment=True, download_name=filename)
-    if kind == "lesson":
-        mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        filename = _safe_download_name(item.get("title"), "giao_an", ".docx")
-        blob = get_or_build_file("lesson_docx", content, filename, lambda: studio_service.build_docx_bytes(content))
+    from app.services.studio_files import fetch_bytes, fetch_studio_file_bytes
+
+    if kind == "file":
+        cached_url_val = (content.get("file_url") if isinstance(content, dict) else None) or item.get("file_url")
+        blob = fetch_bytes(cached_url_val) if cached_url_val else None
+        if not blob:
+            return jsonify({"message": "Tài liệu không có bản lưu — hãy tải lên lại"}), 404
+        filename = content.get("filename") or item.get("title") or "tai_lieu"
+        mime = content.get("mime") or _guess_mime(filename)
+        stem, ext = os.path.splitext(filename)
+        safe = _safe_download_name(stem, "tai_lieu", ext or ".bin")
+        return send_file(io.BytesIO(blob), mimetype=mime, as_attachment=True, download_name=safe)
+
+    file_kind = {"lesson": "lesson_docx", "quiz": "quiz_docx", "pptx": "pptx"}.get(kind)
+    if not file_kind:
+        return jsonify({"message": "Loại học liệu không hỗ trợ tải"}), 400
+
+    cache_payload = content
+    if kind == "pptx":
+        cache_payload = {**content, "light": bool(content.get("light"))}
+
+    blob = fetch_studio_file_bytes(
+        file_kind,
+        cache_payload,
+        (content.get("file_url") if isinstance(content, dict) else None) or item.get("file_url"),
+    )
+    if not blob:
+        return jsonify({
+            "message": "Chưa có file đã lưu trên Cloudinary. Hãy tạo lại học liệu trong Teacher Studio.",
+        }), 404
+
+    if kind == "pptx":
+        mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        filename = _safe_download_name(item.get("title"), "slide", ".pptx")
     elif kind == "quiz":
         mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         filename = _safe_download_name(item.get("title"), "quiz", ".docx")
-        blob = get_or_build_file("quiz_docx", content, filename, lambda: studio_service.quiz_to_docx_bytes(content))
-    elif kind == "pptx":
-        mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-        filename = _safe_download_name(item.get("title"), "slide", ".pptx")
-
-        def _build_lib_pptx():
-            try:
-                return studio_service.build_pptx_bytes(content)
-            except Exception:
-                from flask import current_app
-                current_app.logger.exception("library pptx download failed, retry light")
-                return studio_service.build_pptx_bytes(content, light=True)
-
-        blob = get_or_build_file("pptx", content, filename, _build_lib_pptx)
-    elif kind == "file":
-        return jsonify({"message": "Tài liệu không có bản lưu — hãy tải lên lại"}), 404
     else:
-        return jsonify({"message": "Loại học liệu không hỗ trợ tải"}), 400
+        mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        filename = _safe_download_name(item.get("title"), "giao_an", ".docx")
     return send_file(io.BytesIO(blob), mimetype=mime, as_attachment=True, download_name=filename)
 
 

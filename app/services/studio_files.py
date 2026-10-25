@@ -91,24 +91,26 @@ def cached_url(kind: str, payload: dict) -> str | None:
     return (rec or {}).get("url")
 
 
-def get_or_build_file(kind: str, payload: dict, filename: str, builder) -> bytes:
-    """Return cached Cloudinary bytes, or build + upload once."""
+def ensure_studio_file(kind: str, payload: dict, filename: str, builder) -> dict:
+    """Build Word/PPTX once per content hash, upload to Cloudinary, return cache metadata."""
     ensure_cloudinary()
     body = _strip_cache_fields(payload if isinstance(payload, dict) else {})
     file_hash = _stable_hash(kind, body)
     db = get_db()
-    cached = None
     if db is not None:
         cached = db.studio_files.find_one({"hash": file_hash})
         if cached and cached.get("url"):
-            data = fetch_bytes(cached["url"])
-            if data:
-                current_app.logger.info("studio file cache hit %s %s", kind, file_hash)
-                return data
+            current_app.logger.info("studio file cache hit %s %s", kind, file_hash)
+            return {
+                "file_url": cached["url"],
+                "file_hash": file_hash,
+                "file_public_id": cached.get("public_id"),
+                "file_bytes": cached.get("bytes"),
+            }
 
     blob = builder()
     if not blob:
-        return blob
+        return {}
     try:
         meta = upload_raw_bytes(blob, filename, f"codung/studio/{kind}/{file_hash}")
         if db is not None and meta.get("url"):
@@ -126,6 +128,40 @@ def get_or_build_file(kind: str, payload: dict, filename: str, builder) -> bytes
                     "$setOnInsert": {"created_at": utc_now()}},
                 upsert=True,
             )
+        return {
+            "file_url": meta.get("url"),
+            "file_hash": file_hash,
+            "file_public_id": meta.get("public_id"),
+            "file_bytes": meta.get("bytes") or len(blob),
+        }
     except Exception:
-        current_app.logger.exception("studio file upload failed; still return built file")
+        current_app.logger.exception("studio file upload failed")
+        return {}
+
+
+def fetch_studio_file_bytes(kind: str, payload: dict, file_url: str | None = None) -> bytes | None:
+    """Download bytes from Cloudinary only — never rebuild."""
+    url = file_url
+    if not url and isinstance(payload, dict):
+        url = payload.get("file_url")
+    if url:
+        data = fetch_bytes(url)
+        if data:
+            return data
+    url = cached_url(kind, payload if isinstance(payload, dict) else {})
+    if url:
+        return fetch_bytes(url)
+    return None
+
+
+def get_or_build_file(kind: str, payload: dict, filename: str, builder) -> bytes:
+    """Ensure file is on Cloudinary, then return cached bytes (used in tests/scripts)."""
+    meta = ensure_studio_file(kind, payload, filename, builder)
+    data = fetch_studio_file_bytes(kind, payload, meta.get("file_url"))
+    if data:
+        return data
+    blob = builder()
+    if not blob:
+        return blob
+    current_app.logger.warning("studio file fetch failed after ensure %s", kind)
     return blob
