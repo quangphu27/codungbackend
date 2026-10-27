@@ -2694,8 +2694,8 @@ def generate_pptx_draft(
         data, source = _ask_studio_json(
             compact_pptx if light else prompt,
             system_en,
-            max_tokens=4096 if light else 8192,
-            timeout=45 if light else 90,
+            max_tokens=3072 if light else 6144,
+            timeout=40 if light else 75,
             compact_prompt=compact_pptx,
             book_reference=book_reference,
         )
@@ -2704,20 +2704,20 @@ def generate_pptx_draft(
             slides = []
         rounds = 0
         while (not light) and len(slides) < slide_count and rounds < 2:
-            need = min(6, slide_count - len(slides))
+            need = min(5, slide_count - len(slides))
             titles = [str(s.get("title") or "") for s in slides if isinstance(s, dict)]
             last_batch = len(slides) + need >= slide_count
             more, src2 = _ask_studio_json(
                 f"""{brief_txt}
 {teach}
 Create exactly {need} MORE CLIL slides for “{topic}” ({subject}).
-JSON: {{"slides":[...]}} with slide_type, speaker_notes (teacher_script, vietnamese_support, questions).
+JSON: {{"slides":[...]}} — each slide: layout, title, bullets, notes (EN script + VI support, under 600 chars).
 Do not repeat titles: {titles}.
-English on slide; full Speaker Notes. One slide one purpose. Topic "{topic}".
+English on slide. Topic "{topic}".
 {"Include homework + closing slides in this batch." if last_batch else "No closing yet."}
 Complete JSON.
 """,
-                system_en, max_tokens=6144, timeout=60, book_reference=book_reference,
+                system_en, max_tokens=4096, timeout=45, book_reference=None,
             )
             extra = (more or {}).get("slides") if more else None
             if not isinstance(extra, list) or not extra:

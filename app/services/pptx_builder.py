@@ -987,8 +987,11 @@ def build_rich_pptx_bytes(deck: dict) -> bytes:
             anim_shapes = _layout_content(slide, prs, data, meta, page, total) or []
 
         notes = data.get("notes") or ""
+        if isinstance(notes, dict):
+            from app.services.studio_pptx_clil import format_speaker_notes_for_pptx
+            notes = format_speaker_notes_for_pptx(data)
         if notes:
-            slide.notes_slide.notes_text_frame.text = str(notes)
+            slide.notes_slide.notes_text_frame.text = str(notes)[:8000]
 
         _add_slide_transition(slide, idx)
         _add_element_animations(slide, _ids_of(anim_shapes), click=True)

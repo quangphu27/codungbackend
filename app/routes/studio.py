@@ -433,11 +433,7 @@ def generate_pptx():
         return deck
 
     deck = _call_or_light(payload, _make_pptx, _fallback_pptx)
-    try:
-        deck = _attach_studio_file_cache(deck, "pptx", light=bool(payload.get("light")))
-    except Exception:
-        from flask import current_app
-        current_app.logger.exception("pptx file cache after generate")
+    # Không build PPTX + ảnh AI lúc generate (dễ timeout) — file tạo khi bấm Tải slide.
 
     draft = None
     if payload["save"]:
@@ -803,11 +799,28 @@ def export_pptx():
         filename = f"slide_{filename}"
 
     cache_payload = {**deck, "light": light}
-    return _send_cached_studio_file(
-        "pptx",
-        cache_payload,
-        filename,
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    from app.services.studio_files import fetch_studio_file_bytes
+
+    blob = fetch_studio_file_bytes("pptx", cache_payload)
+    if not blob:
+        try:
+            blob = studio_service.build_pptx_bytes({**deck, "light": light}, light=light)
+        except Exception:
+            from flask import current_app
+            current_app.logger.exception("export pptx build failed, retry light")
+            blob = studio_service.build_pptx_bytes({**deck, "light": True}, light=True)
+    if not blob:
+        return jsonify({"message": "Không tạo được file PowerPoint. Thử lại hoặc giảm số slide."}), 500
+    try:
+        _attach_studio_file_cache({**deck, "light": light}, "pptx", light=light)
+    except Exception:
+        from flask import current_app
+        current_app.logger.exception("pptx cache after export build")
+    return send_file(
+        io.BytesIO(blob),
+        mimetype="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        as_attachment=True,
+        download_name=filename,
     )
 
 

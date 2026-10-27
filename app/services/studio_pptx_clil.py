@@ -158,20 +158,12 @@ Return JSON:
       "image_keyword": "English keywords for Vietnam-relevant photo of THIS slide",
       "image_scene": "One sentence: exact scene matching slide content",
       "hide_answer_on_slide": true,
-      "speaker_notes": {{
-        "teaching_objective": "...",
-        "duration": "e.g. 3 min",
-        "teacher_script": ["Look at the picture.", "What do you notice?"],
-        "questions": [{{"question":"...","expected_answer":"..."}}],
-        "simple_explanation": "...",
-        "vietnamese_support": "...",
-        "pronunciation": "term /ipa/ — nghĩa VI",
-        "answer_key": "if practice slide",
-        "transition": "Next, we will..."
-      }}
+      "notes": "Speaker Notes (plain text): objective; time; teacher script EN; 1-2 questions+answers; VI support for GV; transition"
     }}
   ]
 }}
+
+Keep each slide JSON small: max 5 bullets, notes under 600 characters per slide (no huge nested objects).
 
 Structure guide:
 1 Title — subject, grade, visual
@@ -189,15 +181,15 @@ Closing — thank you / questions
 RULES: One slide one purpose. Teach don't summarize. Accurate {subject} content on "{topic}".
 English on slide; full teacher script in speaker_notes. Question slides: hide_answer_on_slide true.
 Include layouts: table, two_column, cards where pedagogically useful.
-Return exactly {min(slide_count, 8)} slides in this response (first batch of {slide_count}).
+Return exactly {min(slide_count, 6)} slides in this response (first batch of {slide_count}).
 """
 
 
 def pptx_clil_compact_prompt(subject: str, topic: str, grade: str, slide_count: int) -> str:
-    n = min(slide_count, 8)
+    n = min(slide_count, 6)
     return (
         f'JSON edubridge_clil_pptx, {n} slides, {grade} {subject}, "{topic}". '
-        "English slides, speaker_notes with teacher_script + vietnamese_support. Complete JSON."
+        'Each slide: layout, title, bullets, image_keyword, "notes" (EN script + VI support). Complete JSON.'
     )
 
 
