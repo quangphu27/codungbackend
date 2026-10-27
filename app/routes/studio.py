@@ -189,17 +189,37 @@ def _attach_studio_file_cache(content: dict, cache_kind: str, *, light: bool = F
     return out
 
 
-def _send_cached_studio_file(kind: str, payload: dict, filename: str, mime: str):
+def _send_cached_studio_file(
+    kind: str,
+    payload: dict,
+    filename: str,
+    mime: str,
+    *,
+    builder=None,
+    cache_kind: str | None = None,
+):
     from app.services.studio_files import fetch_studio_file_bytes
 
     blob = fetch_studio_file_bytes(kind, payload)
+    if not blob and builder:
+        try:
+            blob = builder()
+        except Exception:
+            from flask import current_app
+            current_app.logger.exception("studio export build failed kind=%s", kind)
+            blob = None
     if not blob:
         return jsonify({
             "message": (
-                "Chưa có file đã lưu. Hãy bấm Tạo lại giáo án/đề/slide "
-                "để hệ thống lưu Word hoặc PowerPoint lên Cloudinary."
+                "Không tạo được file. Thử bấm Tạo lại nội dung rồi tải xuống lần nữa."
             ),
-        }), 404
+        }), 500
+    if cache_kind and builder:
+        try:
+            _attach_studio_file_cache(payload, cache_kind)
+        except Exception:
+            from flask import current_app
+            current_app.logger.exception("studio export cache after build kind=%s", kind)
     return send_file(
         io.BytesIO(blob),
         mimetype=mime,
@@ -314,11 +334,7 @@ def generate_lesson():
         return lesson
 
     lesson = _call_or_light(payload, _make_lesson, _fallback_lesson)
-    try:
-        lesson = _attach_studio_file_cache(lesson, "lesson_docx")
-    except Exception:
-        from flask import current_app
-        current_app.logger.exception("lesson file cache after generate")
+    # Word build khi bấm Tải — tránh timeout lúc generate (giống PowerPoint).
 
     draft = None
     if payload["save"]:
@@ -372,11 +388,6 @@ def generate_quiz():
         return quiz
 
     quiz = _call_or_light(payload, _make_quiz, _fallback_quiz)
-    try:
-        quiz = _attach_studio_file_cache(quiz, "quiz_docx")
-    except Exception:
-        from flask import current_app
-        current_app.logger.exception("quiz file cache after generate")
 
     draft = None
     if payload["save"]:
@@ -761,6 +772,8 @@ def export_docx():
         lesson,
         filename,
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        builder=lambda: studio_service.build_docx_bytes(lesson),
+        cache_kind="lesson_docx",
     )
 
 
@@ -781,6 +794,8 @@ def export_quiz_docx():
         quiz,
         filename,
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        builder=lambda: studio_service.quiz_to_docx_bytes(quiz),
+        cache_kind="quiz_docx",
     )
 
 
