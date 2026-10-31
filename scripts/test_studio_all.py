@@ -75,16 +75,39 @@ def main():
             failures.append("quiz docx too small")
 
         _p("=== 3/4 PPTX ===")
+        want_slides = 8
         deck = studio_service.generate_pptx_draft(
-            grade, subject, topic, slide_count=8, lesson_context=lesson,
+            grade, subject, topic, slide_count=want_slides, lesson_context=lesson,
         )
         pptx = studio_service.build_pptx_bytes(deck, light=True)
         slides = deck.get("slides") or []
         _p(f"  source={deck.get('source')} slides={len(slides)} pptx={len(pptx)}")
-        if len(slides) < 6:
-            failures.append("pptx too few slides")
+        if len(slides) != want_slides:
+            failures.append(f"pptx slide count {len(slides)} != {want_slides}")
+        if deck.get("deck_format") not in (None, "edubridge_clil_pptx"):
+            failures.append(f"pptx bad deck_format {deck.get('deck_format')}")
         if len(pptx) < 8000:
             failures.append("pptx too small")
+        for i, s in enumerate(slides):
+            if not isinstance(s, dict):
+                failures.append(f"slide {i} not dict")
+                continue
+            layout = str(s.get("layout") or "").lower()
+            if layout in ("title", "closing"):
+                continue
+            bullets = s.get("bullets") or s.get("left_bullets") or []
+            has_table = bool(s.get("table"))
+            if not has_table and len(bullets) < 2:
+                failures.append(f"slide {i} thin content: {s.get('title')}")
+            if not (s.get("image_keyword") or "").strip():
+                failures.append(f"slide {i} missing image_keyword")
+            if not (s.get("image_scene") or s.get("visual_element")):
+                failures.append(f"slide {i} missing image_scene/visual")
+
+        if lesson.get("lesson_format") != "edubridge_clil":
+            failures.append("lesson missing edubridge_clil format")
+        if len(lesson.get("sections") or lesson.get("activities") or []) < 4:
+            failures.append("lesson fewer than 4 teaching blocks")
 
         _p("=== 4/4 WORKSHEET ===")
         ws = studio_service.generate_worksheet_draft(

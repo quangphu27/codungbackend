@@ -53,6 +53,8 @@ uploads/
 tmp/
 temp/
 scripts/_studio_out/
+_quiz_test_out*.txt
+.tmp_space_check
 
 # IDE
 .vscode/
