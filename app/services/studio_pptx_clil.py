@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 
 from app.services.studio_lesson_clil import english_level_directive, subject_clil_rules
+from app.services.studio_pptx_subjects import subject_pptx_focus, subject_pptx_v4_prompt
 
 SYSTEM_PPTX_CLIL = (
     "ROLE: EDUBRIDGE PowerPoint designer, CLIL pedagogy expert, Vietnam GDPT 2018 specialist, "
@@ -120,6 +121,8 @@ def pptx_clil_user_prompt(
 
     detail = DETAIL_HINTS.get((pptx_detail or "balanced").lower(), DETAIL_HINTS["balanced"])
     rules = subject_clil_rules(profile)
+    subject_v4 = subject_pptx_v4_prompt(profile, light=False)
+    focus = subject_pptx_focus(profile)
     level = english_level_directive(teacher_english_level, student_english_level)
     plang = presentation_language_rule(presentation_language)
 
@@ -129,11 +132,15 @@ def pptx_clil_user_prompt(
 {level}
 {plang}
 Detail level: {detail}
-SUBJECT RULES ({profile}): {rules}
+=== EDUBRIDGE EMI/CLIL V4.0 — PROMPT POWERPOINT THEO MÔN ({subject}, profile={profile}) ===
+{f"Focus: {focus}" if focus else ""}
+{subject_v4}
+=== (Rule engine tóm tắt) ===
+{rules}
 {lesson_priority}
 Duration: {duration_minutes} minutes across slides (note timing in Speaker Notes).
 MANDATORY: Final deck must contain exactly {slide_count} slides (teacher setting). Each slide = full teaching moment
-(3–6 bullets on content slides; practice slides with real tasks). Do not pad with empty slides.
+(max 3 short bullets per knowledge slide per V4, ≤15 words each; practice slides with real tasks). Do not pad with empty slides.
 
 GDPT 2018 flow across the deck: Khởi động → Hình thành kiến thức → Luyện tập → Vận dụng → consolidation/exit.
 
@@ -158,7 +165,7 @@ Return JSON:
       "student_action": "Observe / Discuss / Predict / Complete...",
       "visual_element": "what image/diagram/chart to show",
       "visual_type": "photo|diagram|table|timeline|graph|model",
-      "bullets": ["short English on slide — max 5-6"],
+      "bullets": ["short English on slide — max 3 bullets, ≤15 words each on knowledge slides"],
       "left_title": "optional",
       "right_title": "optional",
       "left_bullets": [],
@@ -201,6 +208,7 @@ def pptx_continuation_prompt(
     subject: str,
     grade: str,
     topic: str,
+    profile: str,
     slide_count: int,
     need: int,
     existing_titles: list[str],
@@ -209,6 +217,7 @@ def pptx_continuation_prompt(
 ) -> str:
     lesson_block = _lesson_json_for_pptx(lesson_context)
     lesson_snip = f"\nLESSON PLAN (keep aligning):\n{lesson_block}\n" if lesson_block else ""
+    subject_v4 = subject_pptx_v4_prompt(profile, light=True)
     closing = (
         "Include homework + closing slides in this batch."
         if last_batch
@@ -216,6 +225,7 @@ def pptx_continuation_prompt(
     )
     return f"""{brief}
 {teach}
+{subject_v4}
 {lesson_snip}
 Create exactly {need} MORE CLIL slides for “{topic}” ({grade}, {subject}).
 Total deck size must be {slide_count} slides; these are continuation slides only.
@@ -228,13 +238,15 @@ Complete JSON.
 """
 
 
-def pptx_clil_compact_prompt(subject: str, topic: str, grade: str, slide_count: int) -> str:
+def pptx_clil_compact_prompt(
+    subject: str, topic: str, grade: str, slide_count: int, profile: str = "general",
+) -> str:
     n = min(slide_count, 8)
+    focus = subject_pptx_focus(profile)
     return (
-        f'JSON edubridge_clil_pptx, exactly {slide_count} slides total (return {n} now if batched), '
-        f'{grade} {subject}, "{topic}", GDPT 2018 flow. '
-        'Each slide: layout, title, 3+ bullets, image_keyword, image_scene, visual_element, '
-        '"notes" (EN script + VI support). Bám SGK nếu có đính kèm. Complete JSON.'
+        f'JSON edubridge_clil_pptx V4, {slide_count} slides total (return {n} now), '
+        f'{grade} {subject}, "{topic}". Focus: {focus or profile}. '
+        'Max 3 bullets/slide. image_keyword, image_scene, visual_element, notes. Bám SGK. Complete JSON.'
     )
 
 

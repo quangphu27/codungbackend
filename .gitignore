@@ -55,6 +55,7 @@ temp/
 scripts/_studio_out/
 _quiz_test_out*.txt
 .tmp_space_check
+_doc_extract.txt
 
 # IDE
 .vscode/

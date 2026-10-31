@@ -2694,7 +2694,7 @@ def generate_pptx_draft(
         has_book_reference=bool(book_reference),
         has_lesson=bool(lesson_context),
     )
-    compact_pptx = pptx_clil_compact_prompt(subject, topic, grade, slide_count)
+    compact_pptx = pptx_clil_compact_prompt(subject, topic, grade, slide_count, profile)
     try:
         data, source = _ask_studio_json(
             compact_pptx if light else prompt,
@@ -2719,6 +2719,7 @@ def generate_pptx_draft(
                 subject=subject,
                 grade=grade,
                 topic=topic,
+                profile=profile,
                 slide_count=slide_count,
                 need=need,
                 existing_titles=titles,
