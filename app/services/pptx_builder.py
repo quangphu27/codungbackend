@@ -343,7 +343,7 @@ def json_loads_safe(text: str):
 
 _IMAGE_CACHE: dict[str, bytes] = {}
 _AI_IMAGE_ATTEMPTS = 0
-_AI_IMAGE_LIMIT = 2
+_AI_IMAGE_LIMIT = 6
 _EXPORT_DEADLINE = 0.0
 _EXPORT_LIGHT = False
 # Render proxy kills requests around 100s without CORS headers — finish earlier.
@@ -367,9 +367,11 @@ def _gemini_image_prompt(
     title: str = "",
     bullets: list | None = None,
     scene: str = "",
+    visual_element: str = "",
 ) -> str:
     details = "; ".join(str(b).strip() for b in (bullets or [])[:4] if str(b).strip())
-    scene = (scene or "").strip() or (keyword or title or topic)
+    scene = (scene or "").strip() or (visual_element or keyword or title or topic)
+    visual = (visual_element or "").strip()
     return (
         "Photorealistic educational photograph for a Vietnamese secondary-school PowerPoint slide. "
         "No text overlay, no watermark, no logos, no captions, no UI. "
@@ -378,7 +380,8 @@ def _gemini_image_prompt(
         f"Lesson topic: {topic or 'experiential learning'}. "
         f"Slide title: {title or keyword or topic}. "
         f"Exact scene: {scene}. "
-        f"Content cues: {details or 'hands-on class activity in Vietnam'}. "
+        + (f"Must show on slide: {visual}. " if visual else "")
+        + f"Content cues: {details or 'hands-on class activity in Vietnam'}. "
         "Natural lighting, sharp, classroom-safe, 4:3 composition, high quality."
     )
 
@@ -390,9 +393,13 @@ def _related_image_bytes(
     bullets: list | None = None,
     scene: str = "",
     light: bool = False,
+    visual_element: str = "",
 ) -> bytes:
     """Gemini image first (paid), then Vietnam Commons photos, then themed illustration."""
-    cache_key = _image_cache_key(keyword, topic, title, scene, " | ".join(str(b) for b in (bullets or [])[:4]))
+    cache_key = _image_cache_key(
+        keyword, topic, title, scene, visual_element,
+        " | ".join(str(b) for b in (bullets or [])[:4]),
+    )
     cached = _IMAGE_CACHE.get(cache_key)
     if cached:
         return cached
@@ -409,7 +416,7 @@ def _related_image_bytes(
             from app.services.ai_service import generate_slide_image
 
             generated = generate_slide_image(
-                _gemini_image_prompt(keyword, topic, title, bullets, scene),
+                _gemini_image_prompt(keyword, topic, title, bullets, scene, visual_element),
                 aspect_ratio="4:3",
                 timeout=min(12, max(6, int(_seconds_left() - 8))),
             )
@@ -493,6 +500,7 @@ def _add_image_or_art(
     meta=None,
     bullets=None,
     scene: str = "",
+    visual_element: str = "",
 ):
     """Place a framed, rounded, content-related photo or themed illustration."""
     from pptx.enum.shapes import MSO_SHAPE
@@ -505,6 +513,7 @@ def _add_image_or_art(
         bullets=bullets,
         scene=scene,
         light=_EXPORT_LIGHT,
+        visual_element=visual_element,
     )
     pad = int(0.06 * 914400)
     try:
@@ -721,6 +730,7 @@ def _layout_title(slide, prs, data, meta):
         meta=meta,
         bullets=data.get("bullets") or [],
         scene=data.get("image_scene") or "",
+        visual_element=data.get("visual_element") or "",
     )
     return anim
 
@@ -745,6 +755,7 @@ def _layout_content(slide, prs, data, meta, page, total):
         meta=meta,
         bullets=data.get("bullets") or data.get("left_bullets") or [],
         scene=data.get("image_scene") or "",
+        visual_element=data.get("visual_element") or "",
     )
     _footer(slide, prs, page, total, meta.get("topic", ""), meta)
     return [title_box, *bullet_shapes]
@@ -898,25 +909,28 @@ def _prefetch_slide_images(slides: list, topic: str) -> None:
         keyword = (slide or {}).get("image_keyword") or topic
         title = (slide or {}).get("title") or ""
         scene = (slide or {}).get("image_scene") or ""
+        visual = (slide or {}).get("visual_element") or ""
         bullets = tuple((slide or {}).get("bullets") or (slide or {}).get("left_bullets") or [])[:4]
-        item = (keyword, topic, title, bullets, scene)
+        item = (keyword, topic, title, bullets, scene, visual)
         if item in seen:
             continue
         seen.add(item)
         jobs.append(item)
-        if len(jobs) >= _AI_IMAGE_LIMIT:
+        cap = min(_AI_IMAGE_LIMIT, max(3, len([s for s in slides or [] if str((s or {}).get("layout") or "content").lower() in ("title", "content", "")])))
+        if len(jobs) >= cap:
             break
     if not jobs:
         return
 
     def _run(item):
-        keyword, topic_name, title, bullets, scene = item
+        keyword, topic_name, title, bullets, scene, visual = item
         with app.app_context():
             _related_image_bytes(
                 keyword, topic_name, title,
                 bullets=list(bullets),
                 scene=scene,
                 light=_EXPORT_LIGHT,
+                visual_element=visual,
             )
 
     workers = min(2, len(jobs))

@@ -2543,12 +2543,15 @@ def _enrich_image_keywords(slides: list[dict], topic: str) -> list[dict]:
             s["image_keyword"] = (mapped or f"{derived} {topic_visual}").strip()[:80]
         elif mapped and "vietnam" not in kw.lower() and "viet" not in kw.lower():
             s["image_keyword"] = f"{kw} {mapped}".strip()[:80]
+        visual = (s.get("visual_element") or "").strip()
         if not (s.get("image_scene") or "").strip():
-            cue = (body or title or topic).strip()[:160]
+            cue = (visual or body or title or topic).strip()[:160]
             s["image_scene"] = (
                 f"Vietnamese secondary school scene for '{title}': {cue}. "
                 "Natural classroom or schoolyard, matching this slide only."
             )[:220]
+        elif visual and visual.lower() not in (s.get("image_scene") or "").lower():
+            s["image_scene"] = f"{s['image_scene'][:160]} | Visual: {visual[:80]}"[:220]
     return slides
 
 
@@ -2635,7 +2638,9 @@ def generate_pptx_draft(
         SYSTEM_PPTX_CLIL,
         pptx_clil_compact_prompt,
         pptx_clil_user_prompt,
+        pptx_continuation_prompt,
     )
+    from app.services.studio_reference import book_reference_text_only
 
     language = "en"
     slide_count = max(6, min(int(slide_count or 10), 20))
@@ -2702,22 +2707,27 @@ def generate_pptx_draft(
         slides = (data or {}).get("slides") if data else None
         if not isinstance(slides, list):
             slides = []
+        ref_cont = book_reference_text_only(book_reference)
         rounds = 0
-        while (not light) and len(slides) < slide_count and rounds < 2:
-            need = min(5, slide_count - len(slides))
+        while (not light) and len(slides) < slide_count and rounds < 4:
+            need = min(6, slide_count - len(slides))
             titles = [str(s.get("title") or "") for s in slides if isinstance(s, dict)]
             last_batch = len(slides) + need >= slide_count
+            cont_prompt = pptx_continuation_prompt(
+                brief=brief_txt,
+                teach=teach,
+                subject=subject,
+                grade=grade,
+                topic=topic,
+                slide_count=slide_count,
+                need=need,
+                existing_titles=titles,
+                lesson_context=lesson_context,
+                last_batch=last_batch,
+            )
             more, src2 = _ask_studio_json(
-                f"""{brief_txt}
-{teach}
-Create exactly {need} MORE CLIL slides for “{topic}” ({subject}).
-JSON: {{"slides":[...]}} — each slide: layout, title, bullets, notes (EN script + VI support, under 600 chars).
-Do not repeat titles: {titles}.
-English on slide. Topic "{topic}".
-{"Include homework + closing slides in this batch." if last_batch else "No closing yet."}
-Complete JSON.
-""",
-                system_en, max_tokens=4096, timeout=45, book_reference=None,
+                cont_prompt,
+                system_en, max_tokens=4096, timeout=50, book_reference=ref_cont,
             )
             extra = (more or {}).get("slides") if more else None
             if not isinstance(extra, list) or not extra:

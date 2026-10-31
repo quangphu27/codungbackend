@@ -6,13 +6,15 @@ import json
 from app.services.studio_lesson_clil import english_level_directive, subject_clil_rules
 
 SYSTEM_PPTX_CLIL = (
-    "ROLE: EDUBRIDGE PowerPoint designer, CLIL pedagogy expert, Vietnam GDPT specialist, "
+    "ROLE: EDUBRIDGE PowerPoint designer, CLIL pedagogy expert, Vietnam GDPT 2018 specialist, "
     "academic English by subject.\n"
     "TASK: Design an English classroom deck (16:9) that TEACHES — one slide one purpose, "
     "active learning, accurate subject content, rich Speaker Notes for Vietnamese teachers.\n"
     "RULES: Follow approved lesson plan when provided; else textbook/upload; never guess unreadable source. "
+    "Align flow with GDPT 2018: warm-up → knowledge formation → practice → application (plus consolidation). "
     "On-slide English (simple, accurate). Vietnamese support ONLY in Speaker Notes unless bilingual mode. "
     "Do not show answers on question slides before students think. "
+    "Every content slide needs substantive bullets (not placeholders) and image_keyword + image_scene tied to THAT slide. "
     "Editable text layouts — no placeholder slides. JSON only."
 )
 
@@ -105,7 +107,11 @@ def pptx_clil_user_prompt(
             f"{lesson_block}\n"
         )
     elif has_book_reference:
-        lesson_priority = "PRIORITY 1 — Use uploaded textbook/images (no lesson plan yet — label as draft for teacher review).\n"
+        lesson_priority = (
+            "PRIORITY 1 — UPLOADED TEXTBOOK / PDF / IMAGES (mandatory): "
+            "Read attached pages; match terminology, examples, and sequence from the book. "
+            "Do not invent textbook facts. deck_status=aligned_source.\n"
+        )
     else:
         lesson_priority = (
             "No lesson plan or upload — build from topic/description; "
@@ -126,7 +132,10 @@ Detail level: {detail}
 SUBJECT RULES ({profile}): {rules}
 {lesson_priority}
 Duration: {duration_minutes} minutes across slides (note timing in Speaker Notes).
-Target slide count: {slide_count} (adjust slightly if lesson requires — not fixed 10/12/15).
+MANDATORY: Final deck must contain exactly {slide_count} slides (teacher setting). Each slide = full teaching moment
+(3–6 bullets on content slides; practice slides with real tasks). Do not pad with empty slides.
+
+GDPT 2018 flow across the deck: Khởi động → Hình thành kiến thức → Luyện tập → Vận dụng → consolidation/exit.
 
 WORKFLOW (internal): (1) Analyse lesson/sources (2) Script each slide (3) Pick layout (4) Quality check.
 
@@ -181,15 +190,51 @@ Closing — thank you / questions
 RULES: One slide one purpose. Teach don't summarize. Accurate {subject} content on "{topic}".
 English on slide; full teacher script in speaker_notes. Question slides: hide_answer_on_slide true.
 Include layouts: table, two_column, cards where pedagogically useful.
-Return exactly {min(slide_count, 6)} slides in this response (first batch of {slide_count}).
+Return exactly {min(slide_count, 8)} slides in this response (batch 1 of {slide_count} total — remaining batches continue the same lesson).
+"""
+
+
+def pptx_continuation_prompt(
+    *,
+    brief: str,
+    teach: str,
+    subject: str,
+    grade: str,
+    topic: str,
+    slide_count: int,
+    need: int,
+    existing_titles: list[str],
+    lesson_context: dict | None,
+    last_batch: bool,
+) -> str:
+    lesson_block = _lesson_json_for_pptx(lesson_context)
+    lesson_snip = f"\nLESSON PLAN (keep aligning):\n{lesson_block}\n" if lesson_block else ""
+    closing = (
+        "Include homework + closing slides in this batch."
+        if last_batch
+        else "Do not add closing/thank-you yet — more slides follow."
+    )
+    return f"""{brief}
+{teach}
+{lesson_snip}
+Create exactly {need} MORE CLIL slides for “{topic}” ({grade}, {subject}).
+Total deck size must be {slide_count} slides; these are continuation slides only.
+JSON: {{"slides":[...]}} — each slide: slide_type, layout, title, bullets (3–6 on content slides),
+image_keyword, image_scene (must describe THIS slide's subject matter), notes (EN script + VI support, ≤600 chars).
+Do not repeat titles: {existing_titles}.
+English on slide; accurate {subject} content; bám sách/giáo án nếu đã có trong prompt đính kèm.
+{closing}
+Complete JSON.
 """
 
 
 def pptx_clil_compact_prompt(subject: str, topic: str, grade: str, slide_count: int) -> str:
-    n = min(slide_count, 6)
+    n = min(slide_count, 8)
     return (
-        f'JSON edubridge_clil_pptx, {n} slides, {grade} {subject}, "{topic}". '
-        'Each slide: layout, title, bullets, image_keyword, "notes" (EN script + VI support). Complete JSON.'
+        f'JSON edubridge_clil_pptx, exactly {slide_count} slides total (return {n} now if batched), '
+        f'{grade} {subject}, "{topic}", GDPT 2018 flow. '
+        'Each slide: layout, title, 3+ bullets, image_keyword, image_scene, visual_element, '
+        '"notes" (EN script + VI support). Bám SGK nếu có đính kèm. Complete JSON.'
     )
 
 

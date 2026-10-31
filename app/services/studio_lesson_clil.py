@@ -212,6 +212,9 @@ Structure (fill every field with real content, not placeholders):
 }}
 Include 8-12 vocabulary rows when possible (omit IPA if not confident).
 activities: at least WARM-UP, PRESENTATION, PRACTICE, APPLICATION, CONSOLIDATION; durations sum to {duration_minutes}.
+Map teaching flow to Chương trình GDPT 2018 (Vietnam): Khởi động → Hình thành kiến thức → Luyện tập → Vận dụng
+(use English activity names but cover all four stages with real {subject} content on "{topic}").
+When textbook/upload is provided: use its terminology, examples, and page order — do not invent facts.
 english_support_notes: 15-20 essential expressions; keep Vietnamese ONLY there.
 Grade {grade}, subject {subject}, topic "{topic}". Complete JSON once.
 """

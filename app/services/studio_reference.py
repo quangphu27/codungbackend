@@ -160,6 +160,22 @@ def process_reference_uploads(uploads: list[FileStorage]) -> dict:
     }
 
 
+def book_reference_text_only(book_reference: dict | None) -> dict | None:
+    """Chỉ gửi lại phần chữ (batch slide tiếp theo — tránh lặp ảnh base64)."""
+    if not book_reference or not isinstance(book_reference, dict):
+        return None
+    text = (book_reference.get("text") or "").strip()
+    if not text:
+        return None
+    return {
+        "text": text,
+        "images": [],
+        "filenames": book_reference.get("filenames") or [],
+        "image_count": book_reference.get("image_count") or 0,
+        "has_text": True,
+    }
+
+
 def book_reference_prompt_block(book_reference: dict | None) -> tuple[str, list[dict]]:
     """Đoạn prompt + parts Gemini (inline_data)."""
     if not book_reference or not isinstance(book_reference, dict):
