@@ -1663,68 +1663,72 @@ def library_upload_material():
     try:
         from app.services.cloudinary_service import upload_library_material
         meta = upload_library_material(upload, "library")
+        filename = meta.get("filename") or upload.filename
+        file_url = meta.get("url")
+        if not file_url:
+            return jsonify({"message": "Upload thất bại — không có URL file."}), 500
+
+        content = {
+            "filename": filename,
+            "file_url": file_url,
+            "format": meta.get("format"),
+            "bytes": meta.get("bytes"),
+            "mime": _guess_mime(filename),
+            "public_id": meta.get("public_id"),
+            "resource_type": meta.get("resource_type") or "raw",
+            "uploaded_by_admin": True,
+        }
+        doc_title = title or filename
+        ext = os.path.splitext(filename)[1].lower().lstrip(".")
+        item_kind = "pptx" if ext in ("ppt", "pptx") else "file"
+        _ensure_library_catalog(
+            db,
+            grade=grade,
+            subject=subject,
+            topic=topic,
+            description=description,
+            user_id=teacher_id,
+        )
+        now = utc_now()
+        doc = {
+            "kind": item_kind,
+            "title": doc_title,
+            "filename": filename,
+            "topic": topic,
+            "grade": grade,
+            "subject": subject,
+            "description": description,
+            "language": "vi" if item_kind == "file" else "en+vi-notes",
+            "ai_source": "upload",
+            "library_scope": "shared",
+            "status": "approved",
+            "teacher_id": teacher_id,
+            "teacher_name": teacher_name,
+            "content": content,
+            "file_url": file_url,
+            "approved_by": teacher_id,
+            "approved_at": now,
+            "created_at": now,
+            "updated_at": now,
+        }
+        result = db.library_items.insert_one(doc)
+        doc["_id"] = result.inserted_id
+        msg = "Đã tải PowerPoint vào kho chung" if item_kind == "pptx" else "Đã tải tài liệu vào kho chung"
+        return jsonify({
+            "message": msg,
+            "item": _library_summary(doc),
+        }), 201
     except ValueError as exc:
         return jsonify({"message": str(exc)}), 400
     except Exception:
         from flask import current_app
         current_app.logger.exception("library upload failed")
-        return jsonify({"message": "Không tải file lên được. Thử lại sau."}), 500
-
-    filename = meta.get("filename") or upload.filename
-    file_url = meta.get("url")
-    if not file_url:
-        return jsonify({"message": "Upload thất bại"}), 500
-
-    content = {
-        "filename": filename,
-        "file_url": file_url,
-        "format": meta.get("format"),
-        "bytes": meta.get("bytes"),
-        "mime": _guess_mime(filename),
-        "public_id": meta.get("public_id"),
-        "resource_type": meta.get("resource_type") or "raw",
-        "uploaded_by_admin": True,
-    }
-    doc_title = title or filename
-    ext = os.path.splitext(filename)[1].lower().lstrip(".")
-    item_kind = "pptx" if ext in ("ppt", "pptx") else "file"
-    _ensure_library_catalog(
-        db,
-        grade=grade,
-        subject=subject,
-        topic=topic,
-        description=description,
-        user_id=teacher_id,
-    )
-    now = utc_now()
-    doc = {
-        "kind": item_kind,
-        "title": doc_title,
-        "filename": filename,
-        "topic": topic,
-        "grade": grade,
-        "subject": subject,
-        "description": description,
-        "language": "vi" if item_kind == "file" else "en+vi-notes",
-        "ai_source": "upload",
-        "library_scope": "shared",
-        "status": "approved",
-        "teacher_id": teacher_id,
-        "teacher_name": teacher_name,
-        "content": content,
-        "file_url": file_url,
-        "approved_by": teacher_id,
-        "approved_at": now,
-        "created_at": now,
-        "updated_at": now,
-    }
-    result = db.library_items.insert_one(doc)
-    doc["_id"] = result.inserted_id
-    msg = "Đã tải PowerPoint vào kho chung" if item_kind == "pptx" else "Đã tải tài liệu vào kho chung"
-    return jsonify({
-        "message": msg,
-        "item": _library_summary(doc),
-    }), 201
+        return jsonify({
+            "message": (
+                "Không tải file lên được. Kiểm tra dung lượng (≤50MB), định dạng .pptx/.pdf/.docx "
+                "hoặc thử lại sau."
+            ),
+        }), 500
 
 
 @studio_bp.route("/library/<item_id>", methods=["GET"])

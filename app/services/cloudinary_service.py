@@ -1,10 +1,15 @@
+import io
 import os
+import re
 
+import cloudinary.exceptions
 import cloudinary.uploader
 import cloudinary.utils
 from flask import current_app
 from werkzeug.datastructures import FileStorage
 from werkzeug.utils import secure_filename
+
+LIBRARY_MAX_BYTES = 50 * 1024 * 1024
 
 ALLOWED_IMAGE = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 ALLOWED_VIDEO = {"video/mp4", "video/webm", "video/quicktime"}
@@ -27,15 +32,43 @@ def _cloudinary_folder(subfolder: str) -> str:
     return f"{prefix}/{subfolder}"
 
 
+def _ensure_cloudinary_configured() -> None:
+    try:
+        from app.services.studio_files import ensure_cloudinary
+        ensure_cloudinary()
+    except Exception:
+        url = current_app.config.get("CLOUDINARY_URL") or os.getenv("CLOUDINARY_URL")
+        if url:
+            cloudinary.config(cloudinary_url=url, secure=True)
+
+
+def _safe_filename(raw: str) -> str:
+    name = secure_filename(raw or "") or ""
+    if name and name != "file":
+        return name
+    base = re.sub(r"[^\w.\-]+", "_", (raw or "file").strip()) or "file"
+    return base[:180]
+
+
 def _upload(file: FileStorage, resource_type: str, folder: str):
     if not file or not file.filename:
         return None
-    original_name = secure_filename(file.filename) or "file"
+    _ensure_cloudinary_configured()
+    original_name = _safe_filename(file.filename)
     name, ext = os.path.splitext(original_name)
     ext = ext.lstrip(".").lower()
     file.seek(0, 2)
     size = file.tell()
     file.seek(0)
+    if size <= 0:
+        raise ValueError("File rỗng hoặc không đọc được")
+    if folder == "library" and size > LIBRARY_MAX_BYTES:
+        mb = max(1, int(size / (1024 * 1024)))
+        raise ValueError(f"File quá lớn ({mb} MB). Kho học liệu giới hạn 50 MB mỗi file.")
+    payload = file.read()
+    if not payload:
+        raise ValueError("Không đọc được nội dung file")
+    upload_source = io.BytesIO(payload)
     options = {
         "resource_type": resource_type,
         "folder": _cloudinary_folder(folder),
@@ -44,10 +77,22 @@ def _upload(file: FileStorage, resource_type: str, folder: str):
         options["use_filename"] = True
         options["unique_filename"] = True
         options["filename_override"] = original_name
+        if ext:
+            options["format"] = ext
     # Video lớn: upload theo chunk để ổn định hơn
     if resource_type == "video" and size > 20 * 1024 * 1024:
         options["chunk_size"] = 6 * 1024 * 1024
-    result = cloudinary.uploader.upload(file, **options)
+    try:
+        result = cloudinary.uploader.upload(upload_source, **options)
+    except cloudinary.exceptions.Error as exc:
+        msg = str(exc).lower()
+        if "too large" in msg or "file size" in msg:
+            raise ValueError(
+                "File vượt giới hạn Cloudinary. Hãy nén PowerPoint/PDF hoặc tách file nhỏ hơn."
+            ) from exc
+        if "invalid" in msg and "api" in msg:
+            raise ValueError("Cấu hình Cloudinary trên server chưa đúng. Liên hệ quản trị.") from exc
+        raise ValueError(f"Cloudinary từ chối upload: {exc}") from exc
     fmt = result.get("format") or ext or None
     public_id = result.get("public_id", "")
     url = result.get("secure_url")
@@ -110,7 +155,10 @@ def upload_library_material(file: FileStorage, folder: str = "library"):
     if not ok_type and not ok_ext:
         raise ValueError("Định dạng không hỗ trợ (PDF, Word, PowerPoint, Excel, ảnh, ZIP...)")
     resource_type = "image" if file.content_type in ALLOWED_IMAGE or name.endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")) else "raw"
-    return _upload(file, resource_type, folder)
+    meta = _upload(file, resource_type, folder)
+    if not meta or not meta.get("url"):
+        raise ValueError("Upload không trả về URL — thử lại hoặc kiểm tra Cloudinary.")
+    return meta
 
 
 def delete_file(public_id: str, resource_type: str = "image"):

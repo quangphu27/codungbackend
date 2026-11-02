@@ -105,10 +105,7 @@ def create_indexes(db):
           [("catalog_type", 1), ("grade", 1)],
           [("catalog_type", 1), ("grade", 1), ("subject", 1)],
           [
-              ("catalog_type", 1),
-              ("grade", 1),
-              ("subject", 1),
-              ("topic", 1),
+              [("catalog_type", 1), ("grade", 1), ("subject", 1), ("topic", 1)],
               {"unique": True, "name": "library_catalog_topic_unique"},
           ],
       ],
