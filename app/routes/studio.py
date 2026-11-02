@@ -1719,16 +1719,24 @@ def library_upload_material():
             "item": _library_summary(doc),
         }), 201
     except ValueError as exc:
-        return jsonify({"message": str(exc)}), 400
-    except Exception:
+        return jsonify({"message": str(exc), "error": "validation"}), 400
+    except Exception as exc:
         from flask import current_app
         current_app.logger.exception("library upload failed")
-        return jsonify({
-            "message": (
+        raw = str(exc or "").strip()
+        low = raw.lower()
+        if "duplicate key" in low or "e11000" in low:
+            msg = "Trùng dữ liệu trong kho — đổi tên file hoặc xóa bản cũ rồi thử lại."
+        elif "server selection timeout" in low or "connection refused" in low:
+            msg = "Không kết nối được cơ sở dữ liệu. Liên hệ quản trị hệ thống."
+        elif raw and len(raw) <= 300:
+            msg = f"Không tải file lên được: {raw}"
+        else:
+            msg = (
                 "Không tải file lên được. Kiểm tra dung lượng (≤50MB), định dạng .pptx/.pdf/.docx "
-                "hoặc thử lại sau."
-            ),
-        }), 500
+                "hoặc xem log server để biết chi tiết."
+            )
+        return jsonify({"message": msg, "error": "upload_failed"}), 500
 
 
 @studio_bp.route("/library/<item_id>", methods=["GET"])
