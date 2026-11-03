@@ -1634,11 +1634,89 @@ def publish_to_library():
     }), 201
 
 
+LIBRARY_UPLOAD_MAX_FILES = 20
+
+
+def _library_upload_error_message(exc: Exception) -> str:
+    if isinstance(exc, ValueError):
+        return str(exc)
+    raw = str(exc or "").strip()
+    low = raw.lower()
+    if "duplicate key" in low or "e11000" in low:
+        return "Trùng dữ liệu trong kho — đổi tên file hoặc xóa bản cũ rồi thử lại."
+    if "server selection timeout" in low or "connection refused" in low:
+        return "Không kết nối được cơ sở dữ liệu. Liên hệ quản trị hệ thống."
+    if raw and len(raw) <= 300:
+        return raw
+    return "Không tải file lên được (lỗi máy chủ)."
+
+
+def _library_save_uploaded_file(
+    db,
+    upload,
+    *,
+    grade: str,
+    subject: str,
+    topic: str,
+    description: str,
+    title_override: str,
+    teacher_id,
+    teacher_name: str,
+) -> dict:
+    from app.services.cloudinary_service import upload_library_material
+
+    meta = upload_library_material(upload, "library")
+    filename = meta.get("filename") or upload.filename
+    file_url = meta.get("url")
+    if not file_url:
+        raise ValueError("Upload thất bại — không có URL file.")
+    content = {
+        "filename": filename,
+        "file_url": file_url,
+        "format": meta.get("format"),
+        "bytes": meta.get("bytes"),
+        "mime": _guess_mime(filename),
+        "public_id": meta.get("public_id"),
+        "resource_type": meta.get("resource_type") or "raw",
+        "uploaded_by_admin": True,
+    }
+    doc_title = title_override or filename
+    ext = os.path.splitext(filename)[1].lower().lstrip(".")
+    item_kind = "pptx" if ext in ("ppt", "pptx") else "file"
+    now = utc_now()
+    doc = {
+        "kind": item_kind,
+        "title": doc_title,
+        "filename": filename,
+        "topic": topic,
+        "grade": grade,
+        "subject": subject,
+        "description": description,
+        "language": "vi" if item_kind == "file" else "en+vi-notes",
+        "ai_source": "upload",
+        "library_scope": "shared",
+        "status": "approved",
+        "teacher_id": teacher_id,
+        "teacher_name": teacher_name,
+        "content": content,
+        "file_url": file_url,
+        "approved_by": teacher_id,
+        "approved_at": now,
+        "created_at": now,
+        "updated_at": now,
+    }
+    result = db.library_items.insert_one(doc)
+    doc["_id"] = result.inserted_id
+    return _library_summary(doc)
+
+
 @studio_bp.route("/library/upload", methods=["POST"])
 @jwt_required()
 @admin_required
 def library_upload_material():
-    """Admin tải tài liệu (PDF, Word, PPT...) vào một bài học cụ thể trong Kho."""
+    """Admin tải một hoặc nhiều tài liệu vào một bài học cụ thể trong Kho."""
+    from flask import current_app
+
     db = get_db()
     teacher_id = to_object_id(get_jwt_identity())
     user = db.users.find_one({"_id": teacher_id}) or {}
@@ -1649,7 +1727,12 @@ def library_upload_material():
     topic = (request.form.get("topic") or "").strip()
     title = (request.form.get("title") or "").strip()
     description = (request.form.get("description") or "").strip()
-    upload = request.files.get("file")
+
+    uploads = request.files.getlist("file")
+    if not uploads:
+        one = request.files.get("file")
+        uploads = [one] if one and one.filename else []
+    uploads = [u for u in uploads if u and u.filename]
 
     if not grade or grade == "Khác":
         return jsonify({"message": "Chọn khối lớp (grade) cho bài học"}), 400
@@ -1657,86 +1740,60 @@ def library_upload_material():
         return jsonify({"message": "Chọn môn học (subject) cho bài học"}), 400
     if not topic:
         return jsonify({"message": "Chọn bài học / chủ đề (topic) để gắn tài liệu"}), 400
-    if not upload or not upload.filename:
-        return jsonify({"message": "Chọn file tài liệu để tải lên"}), 400
-
-    try:
-        from app.services.cloudinary_service import upload_library_material
-        meta = upload_library_material(upload, "library")
-        filename = meta.get("filename") or upload.filename
-        file_url = meta.get("url")
-        if not file_url:
-            return jsonify({"message": "Upload thất bại — không có URL file."}), 500
-
-        content = {
-            "filename": filename,
-            "file_url": file_url,
-            "format": meta.get("format"),
-            "bytes": meta.get("bytes"),
-            "mime": _guess_mime(filename),
-            "public_id": meta.get("public_id"),
-            "resource_type": meta.get("resource_type") or "raw",
-            "uploaded_by_admin": True,
-        }
-        doc_title = title or filename
-        ext = os.path.splitext(filename)[1].lower().lstrip(".")
-        item_kind = "pptx" if ext in ("ppt", "pptx") else "file"
-        _ensure_library_catalog(
-            db,
-            grade=grade,
-            subject=subject,
-            topic=topic,
-            description=description,
-            user_id=teacher_id,
-        )
-        now = utc_now()
-        doc = {
-            "kind": item_kind,
-            "title": doc_title,
-            "filename": filename,
-            "topic": topic,
-            "grade": grade,
-            "subject": subject,
-            "description": description,
-            "language": "vi" if item_kind == "file" else "en+vi-notes",
-            "ai_source": "upload",
-            "library_scope": "shared",
-            "status": "approved",
-            "teacher_id": teacher_id,
-            "teacher_name": teacher_name,
-            "content": content,
-            "file_url": file_url,
-            "approved_by": teacher_id,
-            "approved_at": now,
-            "created_at": now,
-            "updated_at": now,
-        }
-        result = db.library_items.insert_one(doc)
-        doc["_id"] = result.inserted_id
-        msg = "Đã tải PowerPoint vào kho chung" if item_kind == "pptx" else "Đã tải tài liệu vào kho chung"
+    if not uploads:
+        return jsonify({"message": "Chọn ít nhất một file tài liệu để tải lên"}), 400
+    if len(uploads) > LIBRARY_UPLOAD_MAX_FILES:
         return jsonify({
-            "message": msg,
-            "item": _library_summary(doc),
-        }), 201
-    except ValueError as exc:
-        return jsonify({"message": str(exc), "error": "validation"}), 400
-    except Exception as exc:
-        from flask import current_app
-        current_app.logger.exception("library upload failed")
-        raw = str(exc or "").strip()
-        low = raw.lower()
-        if "duplicate key" in low or "e11000" in low:
-            msg = "Trùng dữ liệu trong kho — đổi tên file hoặc xóa bản cũ rồi thử lại."
-        elif "server selection timeout" in low or "connection refused" in low:
-            msg = "Không kết nối được cơ sở dữ liệu. Liên hệ quản trị hệ thống."
-        elif raw and len(raw) <= 300:
-            msg = f"Không tải file lên được: {raw}"
-        else:
-            msg = (
-                "Không tải file lên được. Kiểm tra dung lượng (≤50MB), định dạng .pptx/.pdf/.docx "
-                "hoặc xem log server để biết chi tiết."
-            )
-        return jsonify({"message": msg, "error": "upload_failed"}), 500
+            "message": f"Tối đa {LIBRARY_UPLOAD_MAX_FILES} file mỗi lần tải lên.",
+        }), 400
+
+    _ensure_library_catalog(
+        db,
+        grade=grade,
+        subject=subject,
+        topic=topic,
+        description=description,
+        user_id=teacher_id,
+    )
+
+    items: list[dict] = []
+    errors: list[dict] = []
+    single = len(uploads) == 1
+    for upload in uploads:
+        fname = upload.filename or "file"
+        title_one = title if single else ""
+        try:
+            items.append(_library_save_uploaded_file(
+                db, upload,
+                grade=grade, subject=subject, topic=topic,
+                description=description, title_override=title_one,
+                teacher_id=teacher_id, teacher_name=teacher_name,
+            ))
+        except Exception as exc:
+            current_app.logger.exception("library upload failed file=%s", fname)
+            errors.append({"filename": fname, "message": _library_upload_error_message(exc)})
+
+    if not items:
+        detail = "; ".join(f"{e['filename']}: {e['message']}" for e in errors[:5])
+        return jsonify({
+            "message": detail or "Không tải được file nào.",
+            "errors": errors,
+            "items": [],
+        }), 400
+
+    ok, fail = len(items), len(errors)
+    if fail:
+        msg = f"Đã tải {ok} file, {fail} file lỗi."
+    elif ok == 1:
+        kind = items[0].get("kind")
+        msg = "Đã tải PowerPoint vào kho chung" if kind == "pptx" else "Đã tải tài liệu vào kho chung"
+    else:
+        msg = f"Đã tải {ok} file vào kho chung."
+
+    body = {"message": msg, "items": items, "errors": errors}
+    if single and items:
+        body["item"] = items[0]
+    return jsonify(body), 201
 
 
 @studio_bp.route("/library/<item_id>", methods=["GET"])
